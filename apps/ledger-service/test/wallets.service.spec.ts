@@ -8,6 +8,8 @@ describe('WalletsService', () => {
   let service: WalletsService;
   let walletsRepo: {
     findOne: jest.Mock;
+    find: jest.Mock;
+    insert: jest.Mock;
     save: jest.Mock;
     create: jest.Mock;
   };
@@ -15,6 +17,8 @@ describe('WalletsService', () => {
   beforeEach(async () => {
     walletsRepo = {
       findOne: jest.fn(),
+      find: jest.fn(),
+      insert: jest.fn(),
       save: jest.fn(async (w) => w),
       create: jest.fn((w) => w),
     };
@@ -27,6 +31,80 @@ describe('WalletsService', () => {
     }).compile();
 
     service = moduleRef.get(WalletsService);
+  });
+
+  it('returns an existing wallet for the requested user and currency', async () => {
+    const wallet = {
+      id: 'wallet-1',
+      ownerId: 'owner-1',
+      currency: 'USD',
+      balance: '0.00',
+    };
+    walletsRepo.findOne.mockResolvedValueOnce(wallet);
+
+    await expect(
+      service.getOrCreateForUser('owner-1', 'USD'),
+    ).resolves.toBe(wallet);
+    expect(walletsRepo.insert).not.toHaveBeenCalled();
+  });
+
+  it('creates the default wallet on the first wallet list request', async () => {
+    const wallet = {
+      id: 'wallet-1',
+      ownerId: 'owner-1',
+      currency: 'USD',
+      balance: '0.00',
+    };
+    walletsRepo.findOne
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(wallet);
+    walletsRepo.find.mockResolvedValueOnce([wallet]);
+
+    await expect(service.listForUser('owner-1')).resolves.toEqual([wallet]);
+    expect(walletsRepo.insert).toHaveBeenCalledWith({
+      ownerId: 'owner-1',
+      currency: 'USD',
+      balance: '0',
+    });
+  });
+
+  it('returns one logical wallet when creation requests race', async () => {
+    const wallet = {
+      id: 'wallet-1',
+      ownerId: 'owner-1',
+      currency: 'USD',
+      balance: '0.00',
+    };
+    let walletExists = false;
+
+    walletsRepo.findOne.mockImplementation(async () =>
+      walletExists ? wallet : null,
+    );
+    walletsRepo.insert.mockImplementation(async () => {
+      if (walletExists) {
+        throw { code: '23505' };
+      }
+      walletExists = true;
+    });
+
+    const [first, second] = await Promise.all([
+      service.getOrCreateForUser('owner-1', 'USD'),
+      service.getOrCreateForUser('owner-1', 'USD'),
+    ]);
+
+    expect(first).toBe(wallet);
+    expect(second).toBe(wallet);
+    expect(walletsRepo.insert).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not hide non-unique database failures during wallet creation', async () => {
+    const databaseError = new Error('database unavailable');
+    walletsRepo.findOne.mockResolvedValueOnce(null);
+    walletsRepo.insert.mockRejectedValueOnce(databaseError);
+
+    await expect(
+      service.getOrCreateForUser('owner-1', 'USD'),
+    ).rejects.toBe(databaseError);
   });
 
   it('allows the owner to read their wallet', async () => {

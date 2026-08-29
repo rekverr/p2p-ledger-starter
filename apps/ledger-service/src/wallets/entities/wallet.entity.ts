@@ -1,12 +1,14 @@
 import {
   Column,
   Entity,
+  Index,
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { User } from '../../auth/entities/user.entity';
 
 @Entity('wallets')
+@Index('UQ_wallets_owner_currency', ['ownerId', 'currency'], { unique: true })
 export class Wallet {
   @PrimaryGeneratedColumn('uuid')
   id: string;

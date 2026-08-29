@@ -14,16 +14,32 @@ export class WalletsService {
   ) {}
 
   async getOrCreateForUser(userId: string, currency = 'USD'): Promise<Wallet> {
-    let wallet = await this.wallets.findOne({ where: { ownerId: userId, currency } });
+    const existing = await this.wallets.findOne({
+      where: { ownerId: userId, currency },
+    });
+    if (existing) {
+      return existing;
+    }
+
+    try {
+      await this.wallets.insert({ ownerId: userId, currency, balance: '0' });
+    } catch (error: unknown) {
+      if (!this.isUniqueViolation(error)) {
+        throw error;
+      }
+    }
+
+    const wallet = await this.wallets.findOne({
+      where: { ownerId: userId, currency },
+    });
     if (!wallet) {
-      wallet = await this.wallets.save(
-        this.wallets.create({ ownerId: userId, currency, balance: '0' }),
-      );
+      throw new Error('Wallet creation did not produce a persistent wallet');
     }
     return wallet;
   }
 
   async listForUser(userId: string): Promise<Wallet[]> {
+    await this.getOrCreateForUser(userId);
     return this.wallets.find({ where: { ownerId: userId } });
   }
 
@@ -59,5 +75,20 @@ export class WalletsService {
     }
     wallet.balance = (current - amount).toFixed(2);
     return this.wallets.save(wallet);
+  }
+
+  private isUniqueViolation(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) {
+      return false;
+    }
+
+    const databaseError = error as {
+      code?: unknown;
+      driverError?: { code?: unknown };
+    };
+    return (
+      databaseError.code === '23505' ||
+      databaseError.driverError?.code === '23505'
+    );
   }
 }

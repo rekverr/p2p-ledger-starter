@@ -57,3 +57,19 @@ cd apps/ledger-service && npm test
 - **Виправлення:** controller передає `req.user.userId`, а service виконує один
   owner-scoped lookup за `{ id, ownerId }`. Неіснуючий і чужий гаманець
   послідовно повертають `404`, не розкриваючи існування ресурсу.
+
+### Wallet lifecycle і дублікати
+
+- **Модель starter code:** wallet створюється ліниво при першому
+  `GET /wallets` користувача. Поточна default currency — `USD`.
+- **DB-інваріант:** у таблиці `wallets` діє unique index на
+  `(ownerId, currency)`. Це дозволяє додавати інші валюти пізніше, але не
+  дозволяє два логічно однакові wallets одного користувача.
+- **Конкурентне створення:** service виконує insert, а PostgreSQL constraint є
+  остаточною гарантією. Caller, який отримав unique violation `23505`, перечитує
+  вже створений wallet. Інші database errors не приховуються.
+- **Валідація amount:** deposit/withdraw приймають лише додатне скінченне число
+  з не більш ніж двома десятковими знаками. `0`, negative, `NaN`, `Infinity`,
+  numeric strings і malformed strings відхиляються. Global whitelist видаляє
+  поля без validation decorators, тому `ownerId` або `balance` з body не
+  потрапляють у DTO.
