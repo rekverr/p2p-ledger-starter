@@ -122,28 +122,45 @@ describe('WalletsService', () => {
   });
 
   it('allows the owner to deposit into their wallet', async () => {
-    walletsRepo.findOne.mockResolvedValueOnce({
+    const wallet = {
       id: 'wallet-1',
       ownerId: 'owner-1',
       balance: '100.00',
-    });
+    };
+    walletsRepo.findOne.mockResolvedValueOnce(wallet);
     const result = await service.deposit('wallet-1', 'owner-1', 50);
 
     expect(result.balance).toBe('150.00');
-    expect(walletsRepo.save).toHaveBeenCalledTimes(1);
+    expect(walletsRepo.save).toHaveBeenCalledWith(wallet);
   });
 
   it('allows the owner to withdraw from their wallet', async () => {
-    walletsRepo.findOne.mockResolvedValueOnce({
+    const wallet = {
       id: 'wallet-1',
       ownerId: 'owner-1',
       balance: '100.00',
-    });
+    };
+    walletsRepo.findOne.mockResolvedValueOnce(wallet);
 
     const result = await service.withdraw('wallet-1', 'owner-1', 25);
 
     expect(result.balance).toBe('75.00');
-    expect(walletsRepo.save).toHaveBeenCalledTimes(1);
+    expect(wallet.balance).toBe('75.00');
+    expect(walletsRepo.save).toHaveBeenCalledWith(wallet);
+  });
+
+  it('allows withdrawing the exact available balance', async () => {
+    const wallet = {
+      id: 'wallet-1',
+      ownerId: 'owner-1',
+      balance: '100.00',
+    };
+    walletsRepo.findOne.mockResolvedValueOnce(wallet);
+
+    const result = await service.withdraw('wallet-1', 'owner-1', 100);
+
+    expect(result.balance).toBe('0.00');
+    expect(walletsRepo.save).toHaveBeenCalledWith(wallet);
   });
 
   it('does not allow another user to read a wallet', async () => {
@@ -180,9 +197,10 @@ describe('WalletsService', () => {
       balance: '100.00',
     });
 
-    await expect(
-      service.withdraw('wallet-1', 'owner-1', 500),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    const withdrawal = service.withdraw('wallet-1', 'owner-1', 500);
+
+    await expect(withdrawal).rejects.toBeInstanceOf(BadRequestException);
+    await expect(withdrawal).rejects.toThrow('Недостатньо коштів');
     expect(walletsRepo.save).not.toHaveBeenCalled();
   });
 });

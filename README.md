@@ -73,3 +73,16 @@ cd apps/ledger-service && npm test
   numeric strings і malformed strings відхиляються. Global whitelist видаляє
   поля без validation decorators, тому `ownerId` або `balance` з body не
   потрапляють у DTO.
+
+### False-positive insufficient-funds test
+
+- **Проблема:** початковий withdraw test викликав Promise без `await` або
+  `return` і додавав assertion лише всередині `.catch()`. Якщо `withdraw()`
+  помилково resolve-ився, assertion не виконувався, але test міг бути зеленим.
+- **Виправлення:** test очікує rejected Promise через `await expect(...).rejects`,
+  перевіряє `BadRequestException`, повідомлення `Недостатньо коштів` і те, що
+  repository `save()` не викликався.
+- **Додатковий захист:** успішні withdraw tests перевіряють змінений balance,
+  об'єкт, переданий у `save()`, і boundary case повного списання до `0.00`.
+- **Skip/TODO audit:** у поточному test tree не знайдено `.skip`, `xit`,
+  `xdescribe`, `test.todo`, `it.todo` або TODO навколо tests.
