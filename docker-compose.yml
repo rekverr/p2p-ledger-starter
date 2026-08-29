@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  ledger-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ledger
+      POSTGRES_PASSWORD: ledger
+      POSTGRES_DB: ledger
+    ports:
+      - '5433:5432'
+    volumes:
+      - ledger-db-data:/var/lib/postgresql/data
+
+  ledger-service:
+    build: ./apps/ledger-service
+    env_file: ./apps/ledger-service/.env.example
+    environment:
+      DATABASE_HOST: ledger-db
+    depends_on:
+      - ledger-db
+    ports:
+      - '3001:3001'
+
+  payments-service:
+    build: ./apps/payments-service
+    env_file: ./apps/payments-service/.env.example
+    depends_on:
+      - ledger-service
+    ports:
+      - '3002:3002'
+
+  notifications-service:
+    build: ./apps/notifications-service
+    env_file: ./apps/notifications-service/.env.example
+    ports:
+      - '3003:3003'
+
+  frontend:
+    build: ./apps/frontend
+    env_file: ./apps/frontend/.env.example
+    environment:
+      LEDGER_SERVICE_URL: http://ledger-service:3001
+      PAYMENTS_SERVICE_URL: http://payments-service:3002
+    depends_on:
+      - ledger-service
+      - payments-service
+    ports:
+      - '3000:3000'
+
+volumes:
+  ledger-db-data:
