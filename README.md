@@ -86,3 +86,33 @@ cd apps/ledger-service && npm test
   об'єкт, переданий у `save()`, і boundary case повного списання до `0.00`.
 - **Skip/TODO audit:** у поточному test tree не знайдено `.skip`, `xit`,
   `xdescribe`, `test.todo`, `it.todo` або TODO навколо tests.
+
+### Concurrent wallet mutation / double spending
+
+- **Проблема:** starter implementation виконував `SELECT balance`, перевірку в
+  application memory і пізніший `save()`. Паралельні requests читали один
+  старий balance та перезаписували результати один одного.
+- **Відтворення:** PostgreSQL integration regression запускає 10 одночасних
+  withdrawals по `30` з balance `100`. До виправлення всі 10 requests повертали
+  success, а persisted balance був `40.00`. Десять одночасних deposits по `10`
+  збільшували balance лише зі `100.00` до `110.00`.
+- **Виправлення:** deposit і withdraw виконуються в TypeORM local transaction.
+  Wallet завантажується owner-scoped запитом із `pessimistic_write`
+  (`SELECT ... FOR UPDATE`), тому row lock утримується від load/check до save.
+  Application mutex не використовується.
+- **Гарантія:** два withdrawals по `80` з balance `100` дають рівно один
+  success і final balance `20.00`; десять withdrawals по `30` дають максимум
+  три success і final balance `10.00`. Insufficient operations не змінюють
+  state, concurrent deposits не губляться, IDOR semantics залишаються `404`.
+- **Запуск regression:** підняти dedicated PostgreSQL database
+  `ledger_concurrency_test` на `127.0.0.1:55432`, потім виконати
+  `cd apps/ledger-service && npm run test:integration:concurrency`.
+
+### Виявлена TypeORM metadata проблема auth entity
+
+Real-DB test також виявив, що TypeORM не може infer PostgreSQL type для
+`User.refreshTokenHash: string | null`, бо `@Column({ nullable: true })` не має
+явного `type`. Production DataSource завершує initialization з
+`DataTypeNotSupportedError`. Це не виправлялось у concurrency task; integration
+test використовує test-only explicit `EntitySchema<User>`, а production defect
+залишається окремою малою задачею.

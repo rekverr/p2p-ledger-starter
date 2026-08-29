@@ -1,5 +1,5 @@
 import { Test } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
+import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { WalletsService } from '../src/wallets/wallets.service';
 import { Wallet } from '../src/wallets/entities/wallet.entity';
@@ -13,6 +13,7 @@ describe('WalletsService', () => {
     save: jest.Mock;
     create: jest.Mock;
   };
+  let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
     walletsRepo = {
@@ -22,11 +23,17 @@ describe('WalletsService', () => {
       save: jest.fn(async (w) => w),
       create: jest.fn((w) => w),
     };
+    dataSource = {
+      transaction: jest.fn(async (operation) =>
+        operation({ getRepository: () => walletsRepo }),
+      ),
+    };
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         WalletsService,
         { provide: getRepositoryToken(Wallet), useValue: walletsRepo },
+        { provide: getDataSourceToken(), useValue: dataSource },
       ],
     }).compile();
 
@@ -147,6 +154,11 @@ describe('WalletsService', () => {
     expect(result.balance).toBe('75.00');
     expect(wallet.balance).toBe('75.00');
     expect(walletsRepo.save).toHaveBeenCalledWith(wallet);
+    expect(walletsRepo.findOne).toHaveBeenCalledWith({
+      where: { id: 'wallet-1', ownerId: 'owner-1' },
+      lock: { mode: 'pessimistic_write' },
+    });
+    expect(dataSource.transaction).toHaveBeenCalledTimes(1);
   });
 
   it('allows withdrawing the exact available balance', async () => {

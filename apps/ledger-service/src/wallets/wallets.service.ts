@@ -3,14 +3,15 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Wallet } from './entities/wallet.entity';
 
 @Injectable()
 export class WalletsService {
   constructor(
     @InjectRepository(Wallet) private readonly wallets: Repository<Wallet>,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
 
   async getOrCreateForUser(userId: string, currency = 'USD'): Promise<Wallet> {
@@ -58,9 +59,12 @@ export class WalletsService {
     ownerId: string,
     amount: number,
   ): Promise<Wallet> {
-    const wallet = await this.getById(walletId, ownerId);
-    wallet.balance = (Number(wallet.balance) + amount).toFixed(2);
-    return this.wallets.save(wallet);
+    return this.dataSource.transaction(async (manager) => {
+      const wallets = manager.getRepository(Wallet);
+      const wallet = await this.getLockedWallet(wallets, walletId, ownerId);
+      wallet.balance = (Number(wallet.balance) + amount).toFixed(2);
+      return wallets.save(wallet);
+    });
   }
 
   async withdraw(
@@ -68,13 +72,31 @@ export class WalletsService {
     ownerId: string,
     amount: number,
   ): Promise<Wallet> {
-    const wallet = await this.getById(walletId, ownerId);
-    const current = Number(wallet.balance);
-    if (current < amount) {
-      throw new BadRequestException('Недостатньо коштів');
+    return this.dataSource.transaction(async (manager) => {
+      const wallets = manager.getRepository(Wallet);
+      const wallet = await this.getLockedWallet(wallets, walletId, ownerId);
+      const current = Number(wallet.balance);
+      if (current < amount) {
+        throw new BadRequestException('Недостатньо коштів');
+      }
+      wallet.balance = (current - amount).toFixed(2);
+      return wallets.save(wallet);
+    });
+  }
+
+  private async getLockedWallet(
+    wallets: Repository<Wallet>,
+    walletId: string,
+    ownerId: string,
+  ): Promise<Wallet> {
+    const wallet = await wallets.findOne({
+      where: { id: walletId, ownerId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!wallet) {
+      throw new NotFoundException('Гаманець не знайдено');
     }
-    wallet.balance = (current - amount).toFixed(2);
-    return this.wallets.save(wallet);
+    return wallet;
   }
 
   private isUniqueViolation(error: unknown): boolean {

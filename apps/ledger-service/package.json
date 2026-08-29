@@ -9,6 +9,7 @@
     "start:prod": "node dist/main",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "test": "jest",
+    "test:integration:concurrency": "jest --runInBand --no-watchman --testPathIgnorePatterns='^$' --runTestsByPath test/wallets.concurrent.integration.ts",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage"
   },
@@ -51,6 +52,7 @@
     "moduleFileExtensions": ["js", "json", "ts"],
     "rootDir": ".",
     "testRegex": "(/test/.*|\\.(test|spec))\\.ts$",
+    "testPathIgnorePatterns": ["<rootDir>/test/.*\\.integration\\.ts$"],
     "transform": { "^.+\\.(t|j)s$": "ts-jest" },
     "collectCoverageFrom": ["src/**/*.(t|j)s"]
   }
