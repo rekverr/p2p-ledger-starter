@@ -39,6 +39,7 @@ jobs:
       - run: npm test -- --runInBand --no-watchman
       - run: npm run test:integration:concurrency
       - run: npm run test:integration:event-store
+      - run: npm run test:integration:migration
 
   payments-service:
     runs-on: ubuntu-latest

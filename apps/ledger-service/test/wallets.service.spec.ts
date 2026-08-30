@@ -1,218 +1,89 @@
-import { Test } from '@nestjs/testing';
-import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { WalletsService } from '../src/wallets/wallets.service';
-import { Wallet } from '../src/wallets/entities/wallet.entity';
+import { randomUUID } from 'crypto';
+import { StoredEvent } from '../src/event-store/entities/stored-event.entity';
+import {
+  assertBalancedPostings,
+  createLedgerTransaction,
+  readPostings,
+} from '../src/ledger/domain/ledger-transaction';
+import { WalletAggregate } from '../src/wallets/domain/wallet.aggregate';
 
-describe('WalletsService', () => {
-  let service: WalletsService;
-  let walletsRepo: {
-    findOne: jest.Mock;
-    find: jest.Mock;
-    insert: jest.Mock;
-    save: jest.Mock;
-    create: jest.Mock;
-  };
-  let dataSource: { transaction: jest.Mock };
+describe('Wallet aggregate and double-entry journal', () => {
+  const walletId = randomUUID();
+  const ownerId = randomUUID();
 
-  beforeEach(async () => {
-    walletsRepo = {
-      findOne: jest.fn(),
-      find: jest.fn(),
-      insert: jest.fn(),
-      save: jest.fn(async (w) => w),
-      create: jest.fn((w) => w),
+  function stored(
+    event: ReturnType<typeof WalletAggregate.createdEvent>,
+    streamVersion: number,
+  ): StoredEvent {
+    return {
+      ...event,
+      streamId: walletId,
+      aggregateType: 'Wallet',
+      streamVersion,
+      metadata: {},
+      correlationId: null,
+      traceId: null,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
     };
-    dataSource = {
-      transaction: jest.fn(async (operation) =>
-        operation({ getRepository: () => walletsRepo }),
-      ),
-    };
+  }
 
-    const moduleRef = await Test.createTestingModule({
-      providers: [
-        WalletsService,
-        { provide: getRepositoryToken(Wallet), useValue: walletsRepo },
-        { provide: getDataSourceToken(), useValue: dataSource },
-      ],
-    }).compile();
+  function opened(): WalletAggregate {
+    return WalletAggregate.rehydrate(walletId, [
+      stored(WalletAggregate.createdEvent(ownerId, 'USD'), 1),
+    ]);
+  }
 
-    service = moduleRef.get(WalletsService);
-  });
+  it('replays wallet state from ordered events', () => {
+    const initial = opened();
+    const deposit = initial.deposit(10000n, randomUUID(), randomUUID());
+    const afterDeposit = initial.apply(stored(deposit, 2));
+    const withdrawal = afterDeposit.withdraw(2500n, randomUUID(), randomUUID());
 
-  it('returns an existing wallet for the requested user and currency', async () => {
-    const wallet = {
-      id: 'wallet-1',
-      ownerId: 'owner-1',
-      currency: 'USD',
-      balance: '0.00',
-    };
-    walletsRepo.findOne.mockResolvedValueOnce(wallet);
-
-    await expect(
-      service.getOrCreateForUser('owner-1', 'USD'),
-    ).resolves.toBe(wallet);
-    expect(walletsRepo.insert).not.toHaveBeenCalled();
-  });
-
-  it('creates the default wallet on the first wallet list request', async () => {
-    const wallet = {
-      id: 'wallet-1',
-      ownerId: 'owner-1',
-      currency: 'USD',
-      balance: '0.00',
-    };
-    walletsRepo.findOne
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(wallet);
-    walletsRepo.find.mockResolvedValueOnce([wallet]);
-
-    await expect(service.listForUser('owner-1')).resolves.toEqual([wallet]);
-    expect(walletsRepo.insert).toHaveBeenCalledWith({
-      ownerId: 'owner-1',
-      currency: 'USD',
-      balance: '0',
-    });
-  });
-
-  it('returns one logical wallet when creation requests race', async () => {
-    const wallet = {
-      id: 'wallet-1',
-      ownerId: 'owner-1',
-      currency: 'USD',
-      balance: '0.00',
-    };
-    let walletExists = false;
-
-    walletsRepo.findOne.mockImplementation(async () =>
-      walletExists ? wallet : null,
-    );
-    walletsRepo.insert.mockImplementation(async () => {
-      if (walletExists) {
-        throw { code: '23505' };
-      }
-      walletExists = true;
-    });
-
-    const [first, second] = await Promise.all([
-      service.getOrCreateForUser('owner-1', 'USD'),
-      service.getOrCreateForUser('owner-1', 'USD'),
+    const replayed = WalletAggregate.rehydrate(walletId, [
+      stored(WalletAggregate.createdEvent(ownerId, 'USD'), 1),
+      stored(deposit, 2),
+      stored(withdrawal, 3),
     ]);
 
-    expect(first).toBe(wallet);
-    expect(second).toBe(wallet);
-    expect(walletsRepo.insert).toHaveBeenCalledTimes(2);
-  });
-
-  it('does not hide non-unique database failures during wallet creation', async () => {
-    const databaseError = new Error('database unavailable');
-    walletsRepo.findOne.mockResolvedValueOnce(null);
-    walletsRepo.insert.mockRejectedValueOnce(databaseError);
-
-    await expect(
-      service.getOrCreateForUser('owner-1', 'USD'),
-    ).rejects.toBe(databaseError);
-  });
-
-  it('allows the owner to read their wallet', async () => {
-    const wallet = {
-      id: 'wallet-1',
-      ownerId: 'owner-1',
-      balance: '100.00',
-    };
-    walletsRepo.findOne.mockResolvedValueOnce(wallet);
-
-    await expect(service.getById('wallet-1', 'owner-1')).resolves.toBe(wallet);
-    expect(walletsRepo.findOne).toHaveBeenCalledWith({
-      where: { id: 'wallet-1', ownerId: 'owner-1' },
+    expect(replayed).toMatchObject({
+      version: 3,
+      ownerId,
+      currency: 'USD',
+      balanceMinor: 7500n,
     });
   });
 
-  it('allows the owner to deposit into their wallet', async () => {
-    const wallet = {
-      id: 'wallet-1',
-      ownerId: 'owner-1',
-      balance: '100.00',
-    };
-    walletsRepo.findOne.mockResolvedValueOnce(wallet);
-    const result = await service.deposit('wallet-1', 'owner-1', 50);
+  it('creates balanced postings for deposit and withdrawal', () => {
+    const aggregate = opened();
+    const deposit = aggregate.deposit(5000n, randomUUID(), randomUUID());
+    const afterDeposit = aggregate.apply(stored(deposit, 2));
+    const withdrawal = afterDeposit.withdraw(2000n, randomUUID(), randomUUID());
 
-    expect(result.balance).toBe('150.00');
-    expect(walletsRepo.save).toHaveBeenCalledWith(wallet);
+    expect(() => assertBalancedPostings(readPostings(deposit.payload))).not.toThrow();
+    expect(() => assertBalancedPostings(readPostings(withdrawal.payload))).not.toThrow();
+    expect(afterDeposit.apply(stored(withdrawal, 3)).balanceMinor).toBe(3000n);
   });
 
-  it('allows the owner to withdraw from their wallet', async () => {
-    const wallet = {
-      id: 'wallet-1',
-      ownerId: 'owner-1',
-      balance: '100.00',
-    };
-    walletsRepo.findOne.mockResolvedValueOnce(wallet);
-
-    const result = await service.withdraw('wallet-1', 'owner-1', 25);
-
-    expect(result.balance).toBe('75.00');
-    expect(wallet.balance).toBe('75.00');
-    expect(walletsRepo.save).toHaveBeenCalledWith(wallet);
-    expect(walletsRepo.findOne).toHaveBeenCalledWith({
-      where: { id: 'wallet-1', ownerId: 'owner-1' },
-      lock: { mode: 'pessimistic_write' },
-    });
-    expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+  it('rejects insufficient funds before producing an event', () => {
+    expect(() => opened().withdraw(1n, randomUUID(), randomUUID())).toThrow(
+      'INSUFFICIENT_FUNDS',
+    );
   });
 
-  it('allows withdrawing the exact available balance', async () => {
-    const wallet = {
-      id: 'wallet-1',
-      ownerId: 'owner-1',
-      balance: '100.00',
-    };
-    walletsRepo.findOne.mockResolvedValueOnce(wallet);
-
-    const result = await service.withdraw('wallet-1', 'owner-1', 100);
-
-    expect(result.balance).toBe('0.00');
-    expect(walletsRepo.save).toHaveBeenCalledWith(wallet);
+  it('rejects an unbalanced journal transaction', () => {
+    expect(() =>
+      assertBalancedPostings([
+        { accountId: `wallet:${walletId}`, amountMinor: '100' },
+        { accountId: 'system:external', amountMinor: '-99' },
+      ]),
+    ).toThrow('Ledger postings are not balanced');
   });
 
-  it('does not allow another user to read a wallet', async () => {
-    walletsRepo.findOne.mockResolvedValueOnce(null);
-
-    await expect(
-      service.getById('wallet-1', 'different-user'),
-    ).rejects.toBeInstanceOf(NotFoundException);
-    expect(walletsRepo.save).not.toHaveBeenCalled();
-  });
-
-  it('does not allow another user to deposit into a wallet', async () => {
-    walletsRepo.findOne.mockResolvedValueOnce(null);
-
-    await expect(
-      service.deposit('wallet-1', 'different-user', 50),
-    ).rejects.toBeInstanceOf(NotFoundException);
-    expect(walletsRepo.save).not.toHaveBeenCalled();
-  });
-
-  it('does not allow another user to withdraw from a wallet', async () => {
-    walletsRepo.findOne.mockResolvedValueOnce(null);
-
-    await expect(
-      service.withdraw('wallet-1', 'different-user', 50),
-    ).rejects.toBeInstanceOf(NotFoundException);
-    expect(walletsRepo.save).not.toHaveBeenCalled();
-  });
-
-  it('does not allow withdrawing more than the current balance', async () => {
-    walletsRepo.findOne.mockResolvedValueOnce({
-      id: 'wallet-1',
-      ownerId: 'owner-1',
-      balance: '100.00',
-    });
-
-    const withdrawal = service.withdraw('wallet-1', 'owner-1', 500);
-
-    await expect(withdrawal).rejects.toBeInstanceOf(BadRequestException);
-    await expect(withdrawal).rejects.toThrow('Недостатньо коштів');
-    expect(walletsRepo.save).not.toHaveBeenCalled();
+  it('constructs signed-equivalent double-entry transactions', () => {
+    const transaction = createLedgerTransaction(walletId, 1234n);
+    expect(transaction.postings).toEqual([
+      { accountId: `wallet:${walletId}`, amountMinor: '1234' },
+      { accountId: 'system:external', amountMinor: '-1234' },
+    ]);
   });
 });

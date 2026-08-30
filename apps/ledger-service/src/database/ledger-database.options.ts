@@ -2,13 +2,16 @@ import { DataSourceOptions } from 'typeorm';
 import { User } from '../auth/entities/user.entity';
 import { CreateLedgerBaseSchema1725000000000 } from './migrations/1725000000000-CreateLedgerBaseSchema';
 import { CreateLedgerEvents1725000001000 } from './migrations/1725000001000-CreateLedgerEvents';
+import { EventSourceWalletBalances1725000002000 } from './migrations/1725000002000-EventSourceWalletBalances';
 import { StoredEvent } from '../event-store/entities/stored-event.entity';
+import { WalletBalanceProjection } from '../wallets/entities/wallet-balance-projection.entity';
 import { Wallet } from '../wallets/entities/wallet.entity';
 
-export const ledgerEntities = [User, Wallet, StoredEvent];
+export const ledgerEntities = [User, Wallet, StoredEvent, WalletBalanceProjection];
 export const ledgerMigrations = [
   CreateLedgerBaseSchema1725000000000,
   CreateLedgerEvents1725000001000,
+  EventSourceWalletBalances1725000002000,
 ];
 
 export function getLedgerDatabaseOptions(): DataSourceOptions {

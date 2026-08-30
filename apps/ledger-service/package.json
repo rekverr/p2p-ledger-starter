@@ -12,6 +12,7 @@
     "test": "jest",
     "test:integration:concurrency": "jest --runInBand --no-watchman --testPathIgnorePatterns='^$' --runTestsByPath test/wallets.concurrent.integration.ts",
     "test:integration:event-store": "jest --runInBand --no-watchman --testPathIgnorePatterns='^$' --runTestsByPath test/event-store.integration.ts",
+    "test:integration:migration": "jest --runInBand --no-watchman --testPathIgnorePatterns='^$' --runTestsByPath test/wallet-balance-migration.integration.ts",
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/database/data-source.ts",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
     "test:watch": "jest --watch",

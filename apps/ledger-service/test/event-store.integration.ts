@@ -75,6 +75,7 @@ describe('PostgreSQL EventStore', () => {
     expect(migrations.map(({ name }) => name)).toEqual([
       'CreateLedgerBaseSchema1725000000000',
       'CreateLedgerEvents1725000001000',
+      'EventSourceWalletBalances1725000002000',
     ]);
   });
 

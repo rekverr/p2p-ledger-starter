@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { Between, DataSource, MoreThanOrEqual, QueryFailedError } from 'typeorm';
+import {
+  Between,
+  DataSource,
+  EntityManager,
+  MoreThanOrEqual,
+  QueryFailedError,
+} from 'typeorm';
 import { StoredEvent } from './entities/stored-event.entity';
 import {
   DuplicateEventIdError,
@@ -20,56 +26,82 @@ export class EventStoreService {
   constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
 
   async append(request: AppendToStreamRequest): Promise<StoredEvent[]> {
+    return this.mapAppendErrors(
+      request,
+      this.dataSource.transaction((manager) =>
+        this.appendUsingManager(request, manager),
+      ),
+    );
+  }
+
+  appendWithinTransaction(
+    request: AppendToStreamRequest,
+    manager: EntityManager,
+  ): Promise<StoredEvent[]> {
+    return this.mapAppendErrors(
+      request,
+      this.appendUsingManager(request, manager),
+    );
+  }
+
+  private async appendUsingManager(
+    request: AppendToStreamRequest,
+    manager: EntityManager,
+  ): Promise<StoredEvent[]> {
     this.validateAppendRequest(request);
+    const events = manager.getRepository(StoredEvent);
+    const latest = await events.findOne({
+      where: { streamId: request.streamId },
+      order: { streamVersion: 'DESC' },
+    });
+    const actualVersion = latest?.streamVersion ?? 0;
 
+    if (actualVersion !== request.expectedVersion) {
+      throw new ExpectedStreamVersionError(
+        request.streamId,
+        request.expectedVersion,
+        actualVersion,
+      );
+    }
+    if (latest && latest.aggregateType !== request.aggregateType) {
+      throw new StreamAggregateTypeError(
+        request.streamId,
+        request.aggregateType,
+        latest.aggregateType,
+      );
+    }
+
+    const storedEvents = request.events.map((event, index) =>
+      events.create({
+        ...event,
+        metadata: event.metadata ?? {},
+        correlationId: event.correlationId ?? null,
+        traceId: event.traceId ?? null,
+        streamId: request.streamId,
+        aggregateType: request.aggregateType,
+        streamVersion: request.expectedVersion + index + 1,
+      }),
+    );
+    await events.insert(storedEvents);
+
+    return events.find({
+      where: {
+        streamId: request.streamId,
+        streamVersion: Between(
+          request.expectedVersion + 1,
+          request.expectedVersion + request.events.length,
+        ),
+      },
+      order: { streamVersion: 'ASC' },
+    });
+  }
+
+  private async mapAppendErrors(
+    request: AppendToStreamRequest,
+    append: Promise<StoredEvent[]>,
+  ): Promise<StoredEvent[]> {
     try {
-      return await this.dataSource.transaction(async (manager) => {
-        const events = manager.getRepository(StoredEvent);
-        const latest = await events.findOne({
-          where: { streamId: request.streamId },
-          order: { streamVersion: 'DESC' },
-        });
-        const actualVersion = latest?.streamVersion ?? 0;
-
-        if (actualVersion !== request.expectedVersion) {
-          throw new ExpectedStreamVersionError(
-            request.streamId,
-            request.expectedVersion,
-            actualVersion,
-          );
-        }
-        if (latest && latest.aggregateType !== request.aggregateType) {
-          throw new StreamAggregateTypeError(
-            request.streamId,
-            request.aggregateType,
-            latest.aggregateType,
-          );
-        }
-
-        const storedEvents = request.events.map((event, index) =>
-          events.create({
-            ...event,
-            metadata: event.metadata ?? {},
-            correlationId: event.correlationId ?? null,
-            traceId: event.traceId ?? null,
-            streamId: request.streamId,
-            aggregateType: request.aggregateType,
-            streamVersion: request.expectedVersion + index + 1,
-          }),
-        );
-        await events.insert(storedEvents);
-
-        return events.find({
-          where: {
-            streamId: request.streamId,
-            streamVersion: Between(
-              request.expectedVersion + 1,
-              request.expectedVersion + request.events.length,
-            ),
-          },
-          order: { streamVersion: 'ASC' },
-        });
-      });
+      return await append;
     } catch (error: unknown) {
       if (error instanceof ExpectedStreamVersionError) {
         throw error;
@@ -91,7 +123,11 @@ export class EventStoreService {
     }
   }
 
-  loadStream(streamId: string, fromVersion = 1): Promise<StoredEvent[]> {
+  loadStream(
+    streamId: string,
+    fromVersion = 1,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<StoredEvent[]> {
     if (!streamId) {
       throw new TypeError('streamId is required');
     }
@@ -99,7 +135,7 @@ export class EventStoreService {
       throw new TypeError('fromVersion must be a positive integer');
     }
 
-    return this.dataSource.getRepository(StoredEvent).find({
+    return manager.getRepository(StoredEvent).find({
       where: { streamId, streamVersion: MoreThanOrEqual(fromVersion) },
       order: { streamVersion: 'ASC' },
     });

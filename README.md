@@ -121,8 +121,9 @@ integration test перевіряє саме production `User` і `Wallet` metad
 ## Event Store foundation
 
 `ledger-service` має PostgreSQL-backed append-only таблицю `ledger_events`.
-Це окремий write-side фундамент; існуючий wallet API поки зберігає сумісний
-CRUD balance і буде переведений на events/projection наступним етапом.
+Wallet financial history тепер є source of truth у цьому Event Store; public
+wallet API зберігає попередню форму відповіді з decimal `balance`, але значення
+читається з CQRS projection, а не з mutable колонки `wallets.balance`.
 
 ### Схема event record
 
@@ -177,6 +178,32 @@ Migration `CreateLedgerBaseSchema1725000000000` безпечно приймає 
 `CreateLedgerEvents1725000001000` створює Event Store constraints, index і
 append-only trigger.
 
+### Wallet aggregate, journal і CQRS projection
+
+Один wallet відповідає stream `aggregate_type=Wallet`. Aggregate replay-ить:
+
+- `WalletCreated` — identity власника й currency;
+- `MoneyDeposited` — завершене зовнішнє поповнення;
+- `WithdrawalCompleted` — завершене зовнішнє списання.
+
+Кожна monetary event містить `transactionId` і signed postings. Поповнення має
+`+amount` на `wallet:<walletId>` та `-amount` на `system:external`; withdrawal —
+навпаки. Domain layer відхиляє transaction, якщо postings менше двох або їхня
+сума не дорівнює нулю. Amount зберігається як integer minor units у string
+формі всередині JSON, щоб не залежати від floating-point replay.
+
+Write path авторизує owner, replay-ить aggregate, перевіряє balance та journal
+invariant, append-ить event з expected stream version і в тій самій PostgreSQL
+transaction оновлює `wallet_balance_projection`. Read path (`list/get`) читає
+projection. Projection містить `balance_minor` і оброблену `stream_version`,
+тому її можна детерміновано перебудувати з wallet stream.
+
+Migration `EventSourceWalletBalances1725000002000` конвертує кожен legacy
+`wallets.balance` у `WalletCreated` та, для ненульового balance, balanced
+`MoneyDeposited` event, створює projection і видаляє стару колонку. Негативний
+legacy balance або unsupported/unbalanced existing wallet event зупиняє
+migration замість створення двох суперечливих джерел істини.
+
 ## Відтворювана перевірка
 
 CI використовує Node.js 20 та виконує `npm ci`, lint і build для всіх чотирьох
@@ -199,6 +226,7 @@ npm run build
 npm test -- --runInBand --no-watchman
 npm run test:integration:concurrency
 npm run test:integration:event-store
+npm run test:integration:migration
 ```
 
 Остання команда очікує dedicated PostgreSQL database
