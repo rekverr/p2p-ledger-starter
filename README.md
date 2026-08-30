@@ -118,6 +118,65 @@ Real-DB test виявив, що TypeORM не міг infer PostgreSQL type для
 тому production entities проходять DataSource initialization, а concurrency
 integration test перевіряє саме production `User` і `Wallet` metadata.
 
+## Event Store foundation
+
+`ledger-service` має PostgreSQL-backed append-only таблицю `ledger_events`.
+Це окремий write-side фундамент; існуючий wallet API поки зберігає сумісний
+CRUD balance і буде переведений на events/projection наступним етапом.
+
+### Схема event record
+
+- `event_id UUID` — глобальний primary key події;
+- `stream_id UUID` + `stream_version INTEGER` — identity та послідовність
+  aggregate stream, захищені unique constraint;
+- `aggregate_type`, `event_type`, `schema_version` — тип aggregate, тип події
+  та версія її persisted schema;
+- `payload JSONB`, `metadata JSONB` — domain data і технічний контекст;
+- nullable `correlation_id`, `trace_id` — зв'язок із command/trace;
+- `created_at TIMESTAMPTZ` — database timestamp append-у.
+
+Positive check constraints діють для `stream_version` та `schema_version`.
+PostgreSQL trigger `ledger_events_append_only` відхиляє `UPDATE` і `DELETE` з
+SQLSTATE `55000`: виправлення історії мають бути лише новими compensating
+events. `TRUNCATE` використовується виключно для ізольованого test database.
+
+### Append і optimistic concurrency
+
+`EventStoreService.append()` приймає `streamId`, `aggregateType`,
+`expectedVersion` та один або кілька events. В одній local DB transaction він:
+
+1. читає поточну версію stream;
+2. перевіряє expected version та незмінність aggregate type;
+3. призначає послідовні stream versions;
+4. вставляє весь batch одним atomic insert.
+
+Unique constraint `(stream_id, stream_version)` є остаточною гарантією race:
+два concurrent commands з одним expected version не можуть обидва commit-нутись.
+Конфлікт повертається як `ExpectedStreamVersionError`; глобальний duplicate
+`event_id` — як `DuplicateEventIdError`. Помилка будь-якої події відкочує весь
+batch. `loadStream()` завжди читає за `stream_version ASC`, а `replay()`
+застосовує переданий deterministic reducer до persisted payload.
+
+`event_type + schema_version` є contract для майбутніх version-specific
+handlers/upcasters: значення старих подій не переписуються. Upcaster registry
+ще не потрібен і на цьому етапі не реалізований.
+
+### Migrations
+
+Production configuration більше не використовує `synchronize: true`.
+Checked-in migrations створюють базові starter tables та `ledger_events`;
+`migrationsRun: true` застосовує їх під час startup. Для явного запуску:
+
+```bash
+cd apps/ledger-service
+npm run migration:run
+```
+
+Migration `CreateLedgerBaseSchema1725000000000` безпечно приймає database зі
+старими synchronize-created `users`/`wallets`, а
+`CreateLedgerEvents1725000001000` створює Event Store constraints, index і
+append-only trigger.
+
 ## Відтворювана перевірка
 
 CI використовує Node.js 20 та виконує `npm ci`, lint і build для всіх чотирьох
@@ -139,6 +198,7 @@ npm run build
 ```bash
 npm test -- --runInBand --no-watchman
 npm run test:integration:concurrency
+npm run test:integration:event-store
 ```
 
 Остання команда очікує dedicated PostgreSQL database

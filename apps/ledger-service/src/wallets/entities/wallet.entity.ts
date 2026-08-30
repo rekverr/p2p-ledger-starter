@@ -2,6 +2,7 @@ import {
   Column,
   Entity,
   Index,
+  JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
@@ -14,6 +15,7 @@ export class Wallet {
   id: string;
 
   @ManyToOne(() => User, (user) => user.wallets)
+  @JoinColumn({ name: 'ownerId', foreignKeyConstraintName: 'FK_wallets_owner' })
   owner: User;
 
   @Column()
