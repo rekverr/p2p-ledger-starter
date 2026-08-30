@@ -1,43 +1,11 @@
 import 'reflect-metadata';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { DataSource, EntitySchema, Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { User } from '../src/auth/entities/user.entity';
 import { Wallet } from '../src/wallets/entities/wallet.entity';
 import { WalletsService } from '../src/wallets/wallets.service';
 
 jest.setTimeout(30_000);
-
-const TestUserSchema = new EntitySchema<User>({
-  name: 'User',
-  target: User,
-  tableName: 'users',
-  columns: {
-    id: { type: 'uuid', primary: true, generated: 'uuid' },
-    email: { type: 'varchar', unique: true },
-    passwordHash: { type: 'varchar' },
-    refreshTokenHash: { type: 'varchar', nullable: true },
-    role: { type: 'varchar', default: 'user' },
-  },
-});
-
-const TestWalletSchema = new EntitySchema<Wallet>({
-  name: 'Wallet',
-  target: Wallet,
-  tableName: 'wallets',
-  columns: {
-    id: { type: 'uuid', primary: true, generated: 'uuid' },
-    ownerId: { type: 'uuid' },
-    currency: { type: 'varchar', default: 'USD' },
-    balance: { type: 'numeric', precision: 18, scale: 2, default: 0 },
-  },
-  indices: [
-    {
-      name: 'UQ_wallets_owner_currency',
-      columns: ['ownerId', 'currency'],
-      unique: true,
-    },
-  ],
-});
 
 describe('WalletsService PostgreSQL concurrency', () => {
   let dataSource: DataSource;
@@ -60,7 +28,7 @@ describe('WalletsService PostgreSQL concurrency', () => {
       username: process.env.TEST_DATABASE_USER ?? 'ledger_test',
       password: process.env.TEST_DATABASE_PASSWORD ?? 'ledger_test',
       database,
-      entities: [TestUserSchema, TestWalletSchema],
+      entities: [User, Wallet],
       synchronize: true,
       dropSchema: true,
     });

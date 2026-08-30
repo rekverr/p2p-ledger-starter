@@ -30,8 +30,11 @@ docker-compose up --build
 - frontend: http://localhost:3000
 
 Для локальної розробки без Docker: скопіюйте `.env.example` → `.env` у
-кожному сервісі, підніміть Postgres окремо, `npm install && npm run start:dev`
+кожному сервісі, підніміть Postgres окремо, `npm ci && npm run start:dev`
 у потрібному сервісі.
+
+Кожен app є окремим npm package і має власний `package-lock.json`. Для
+відтворюваного install локально, у CI та Docker використовується `npm ci`.
 
 ## Тести
 
@@ -108,11 +111,36 @@ cd apps/ledger-service && npm test
   `ledger_concurrency_test` на `127.0.0.1:55432`, потім виконати
   `cd apps/ledger-service && npm run test:integration:concurrency`.
 
-### Виявлена TypeORM metadata проблема auth entity
+### TypeORM metadata auth entity
 
-Real-DB test також виявив, що TypeORM не може infer PostgreSQL type для
-`User.refreshTokenHash: string | null`, бо `@Column({ nullable: true })` не має
-явного `type`. Production DataSource завершує initialization з
-`DataTypeNotSupportedError`. Це не виправлялось у concurrency task; integration
-test використовує test-only explicit `EntitySchema<User>`, а production defect
-залишається окремою малою задачею.
+Real-DB test виявив, що TypeORM не міг infer PostgreSQL type для
+`User.refreshTokenHash: string | null`. Колонка тепер явно має type `varchar`,
+тому production entities проходять DataSource initialization, а concurrency
+integration test перевіряє саме production `User` і `Wallet` metadata.
+
+## Відтворювана перевірка
+
+CI використовує Node.js 20 та виконує `npm ci`, lint і build для всіх чотирьох
+apps. Ledger job додатково запускає unit tests та PostgreSQL concurrency
+integration tests. Payments і notifications поки не мають test files, тому CI
+не маскує їх відсутність через `--passWithNoTests`.
+
+Локальний набір команд для кожного app:
+
+```bash
+cd apps/<app>
+npm ci
+npm run lint
+npm run build
+```
+
+Для ledger додатково:
+
+```bash
+npm test -- --runInBand --no-watchman
+npm run test:integration:concurrency
+```
+
+Остання команда очікує dedicated PostgreSQL database
+`ledger_concurrency_test` на `127.0.0.1:55432`; налаштування можна змінити через
+`TEST_DATABASE_*` environment variables.

@@ -9,6 +9,20 @@ on:
 jobs:
   ledger-service:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ledger_test
+          POSTGRES_PASSWORD: ledger_test
+          POSTGRES_DB: ledger_concurrency_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U ledger_test -d ledger_concurrency_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: apps/ledger-service
@@ -19,9 +33,11 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: apps/ledger-service/package-lock.json
-      - run: npm install
+      - run: npm ci
       - run: npm run lint
-      - run: npm test
+      - run: npm run build
+      - run: npm test -- --runInBand --no-watchman
+      - run: npm run test:integration:concurrency
 
   payments-service:
     runs-on: ubuntu-latest
@@ -35,9 +51,9 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: apps/payments-service/package-lock.json
-      - run: npm install
+      - run: npm ci
       - run: npm run lint
-      - run: npm test
+      - run: npm run build
 
   notifications-service:
     runs-on: ubuntu-latest
@@ -51,8 +67,9 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: apps/notifications-service/package-lock.json
-      - run: npm install
+      - run: npm ci
       - run: npm run lint
+      - run: npm run build
 
   frontend:
     runs-on: ubuntu-latest
@@ -66,5 +83,6 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
-      - run: npm install
+      - run: npm ci
       - run: npm run lint
+      - run: npm run build

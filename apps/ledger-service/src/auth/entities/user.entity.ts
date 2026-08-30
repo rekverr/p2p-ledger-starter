@@ -12,7 +12,7 @@ export class User {
   @Column()
   passwordHash: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   refreshTokenHash: string | null;
 
   @Column({ default: 'user' })
