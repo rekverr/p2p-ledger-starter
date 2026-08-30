@@ -57,13 +57,24 @@ describe('legacy wallet balance migration', () => {
       [walletId],
     )) as Array<{ event_type: string; stream_version: number; payload: { postings?: Array<{ amountMinor: string }> } }>;
     const [projection] = (await dataSource.query(
-      'SELECT balance_minor, stream_version FROM wallet_balance_projection WHERE wallet_id = $1',
+      `SELECT balance_minor, held_minor, available_minor, stream_version
+       FROM wallet_balance_projection WHERE wallet_id = $1`,
       [walletId],
-    )) as Array<{ balance_minor: string; stream_version: number }>;
+    )) as Array<{
+      balance_minor: string;
+      held_minor: string;
+      available_minor: string;
+      stream_version: number;
+    }>;
 
     expect(columns.map(({ column_name }) => column_name)).not.toContain('balance');
     expect(events.map(({ event_type }) => event_type)).toEqual(['WalletCreated', 'MoneyDeposited']);
     expect(events[1].payload.postings?.map(({ amountMinor }) => amountMinor)).toEqual(['4235', '-4235']);
-    expect(projection).toEqual({ balance_minor: '4235', stream_version: 2 });
+    expect(projection).toEqual({
+      balance_minor: '4235',
+      held_minor: '0',
+      available_minor: '4235',
+      stream_version: 2,
+    });
   });
 });

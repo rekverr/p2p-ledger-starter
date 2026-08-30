@@ -76,6 +76,7 @@ describe('PostgreSQL EventStore', () => {
       'CreateLedgerBaseSchema1725000000000',
       'CreateLedgerEvents1725000001000',
       'EventSourceWalletBalances1725000002000',
+      'AddHeldBalanceProjection1725000003000',
     ]);
   });
 

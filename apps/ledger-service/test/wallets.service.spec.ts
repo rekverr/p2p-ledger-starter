@@ -86,4 +86,48 @@ describe('Wallet aggregate and double-entry journal', () => {
       { accountId: 'system:external', amountMinor: '-1234' },
     ]);
   });
+
+  it('tracks total, held and available through idempotent hold lifecycle', () => {
+    const openedWallet = opened();
+    const deposited = openedWallet.deposit(10000n, randomUUID(), randomUUID());
+    const funded = openedWallet.apply(stored(deposited, 2));
+    const holdId = randomUUID();
+    const heldEvent = funded.placeHold(holdId, 6000n, randomUUID());
+    if (!heldEvent) throw new Error('Expected FundsHeld event');
+    const held = funded.apply(stored(heldEvent, 3));
+
+    expect(held.balanceMinor).toBe(10000n);
+    expect(held.heldMinor).toBe(6000n);
+    expect(held.availableMinor).toBe(4000n);
+    expect(held.placeHold(holdId, 6000n, randomUUID())).toBeNull();
+    expect(() => held.placeHold(randomUUID(), 4001n, randomUUID())).toThrow(
+      'INSUFFICIENT_FUNDS',
+    );
+
+    const releasedEvent = held.releaseHold(holdId, randomUUID());
+    if (!releasedEvent) throw new Error('Expected HoldReleased event');
+    const released = held.apply(stored(releasedEvent, 4));
+    expect(released.heldMinor).toBe(0n);
+    expect(released.releaseHold(holdId, randomUUID())).toBeNull();
+  });
+
+  it('settles a hold once with balanced postings', () => {
+    const initial = opened();
+    const funded = initial.apply(
+      stored(initial.deposit(10000n, randomUUID(), randomUUID()), 2),
+    );
+    const holdId = randomUUID();
+    const heldEvent = funded.placeHold(holdId, 3000n, randomUUID());
+    if (!heldEvent) throw new Error('Expected FundsHeld event');
+    const held = funded.apply(stored(heldEvent, 3));
+    const consumedEvent = held.consumeHold(holdId, randomUUID(), randomUUID());
+    if (!consumedEvent) throw new Error('Expected HoldConsumed event');
+    expect(() => assertBalancedPostings(readPostings(consumedEvent.payload))).not.toThrow();
+    const consumed = held.apply(stored(consumedEvent, 4));
+
+    expect(consumed.balanceMinor).toBe(7000n);
+    expect(consumed.heldMinor).toBe(0n);
+    expect(consumed.availableMinor).toBe(7000n);
+    expect(consumed.consumeHold(holdId, randomUUID(), randomUUID())).toBeNull();
+  });
 });

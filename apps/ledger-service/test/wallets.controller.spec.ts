@@ -8,6 +8,9 @@ describe('WalletsController', () => {
     getById: jest.Mock;
     deposit: jest.Mock;
     withdraw: jest.Mock;
+    placeHold: jest.Mock;
+    releaseHold: jest.Mock;
+    consumeHold: jest.Mock;
   };
 
   const request = {
@@ -19,6 +22,9 @@ describe('WalletsController', () => {
       getById: jest.fn(),
       deposit: jest.fn(),
       withdraw: jest.fn(),
+      placeHold: jest.fn(),
+      releaseHold: jest.fn(),
+      consumeHold: jest.fn(),
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -58,6 +64,45 @@ describe('WalletsController', () => {
       'wallet-1',
       'owner-1',
       25,
+    );
+  });
+
+  it('uses the JWT principal for the complete hold lifecycle', async () => {
+    walletsService.placeHold.mockResolvedValueOnce({ id: 'wallet-1' });
+    walletsService.releaseHold.mockResolvedValueOnce({ id: 'wallet-1' });
+    walletsService.consumeHold.mockResolvedValueOnce({ id: 'wallet-1' });
+
+    await controller.placeHold(
+      'wallet-1',
+      { holdId: 'b3c34a63-528d-4a44-91cc-599a34422ed0', amount: 25 },
+      request,
+    );
+    await controller.releaseHold(
+      'wallet-1',
+      'b3c34a63-528d-4a44-91cc-599a34422ed0',
+      request,
+    );
+    await controller.consumeHold(
+      'wallet-1',
+      'b3c34a63-528d-4a44-91cc-599a34422ed0',
+      request,
+    );
+
+    expect(walletsService.placeHold).toHaveBeenCalledWith(
+      'wallet-1',
+      'owner-1',
+      'b3c34a63-528d-4a44-91cc-599a34422ed0',
+      25,
+    );
+    expect(walletsService.releaseHold).toHaveBeenCalledWith(
+      'wallet-1',
+      'owner-1',
+      'b3c34a63-528d-4a44-91cc-599a34422ed0',
+    );
+    expect(walletsService.consumeHold).toHaveBeenCalledWith(
+      'wallet-1',
+      'owner-1',
+      'b3c34a63-528d-4a44-91cc-599a34422ed0',
     );
   });
 });

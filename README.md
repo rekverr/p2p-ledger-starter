@@ -6,8 +6,8 @@
 
 ## Що вже працює
 
-- `apps/ledger-service` — автентифікація (register/login/refresh) і базовий
-  CRUD гаманців. Балансу гаманця бракує event sourcing — це частина завдання.
+- `apps/ledger-service` — автентифікація, event-sourced wallets, double-entry
+  journal, CQRS balance/hold projection та admin reconciliation API.
 - `apps/frontend` — сторінки логіну, реєстрації та список гаманців (Next.js
   App Router, Server Component + API-роут-проксі для авторизації).
 
@@ -99,9 +99,10 @@ cd apps/ledger-service && npm test
   withdrawals по `30` з balance `100`. До виправлення всі 10 requests повертали
   success, а persisted balance був `40.00`. Десять одночасних deposits по `10`
   збільшували balance лише зі `100.00` до `110.00`.
-- **Виправлення:** deposit і withdraw виконуються в TypeORM local transaction.
-  Wallet завантажується owner-scoped запитом із `pessimistic_write`
-  (`SELECT ... FOR UPDATE`), тому row lock утримується від load/check до save.
+- **Виправлення:** command replay-ить wallet stream, перевіряє invariant та
+  append-ить event з expected stream version разом з projection update в одній
+  TypeORM/PostgreSQL transaction. Unique `(stream_id, stream_version)` змушує
+  конкурентного loser перечитати stream і повторити domain validation.
   Application mutex не використовується.
 - **Гарантія:** два withdrawals по `80` з balance `100` дають рівно один
   success і final balance `20.00`; десять withdrawals по `30` дають максимум
@@ -203,6 +204,37 @@ Migration `EventSourceWalletBalances1725000002000` конвертує кожен
 `MoneyDeposited` event, створює projection і видаляє стару колонку. Негативний
 legacy balance або unsupported/unbalanced existing wallet event зупиняє
 migration замість створення двох суперечливих джерел істини.
+
+### Holds, rebuild і reconciliation
+
+Hold lifecycle представлений immutable events `FundsHeld`, `HoldReleased` та
+`HoldConsumed`. `FundsHeld` зменшує лише available balance; settlement
+`HoldConsumed` створює balanced postings і тоді зменшує total balance. Формула
+projection: `available_minor = balance_minor - held_minor`. PostgreSQL check
+constraints забороняють negative held/available та projection, що порушує цю
+формулу.
+
+`holdId` є idempotency identity всередині wallet stream. Повторний place з тією
+самою сумою, release уже released hold та consume уже consumed hold повертають
+поточний state без нового event. Повторне використання ID з іншою сумою або
+несумісний terminal transition відхиляється. Concurrent holds захищені тією
+самою expected-version гарантією, що й withdraw, тому сума active holds не може
+перевищити event-derived total.
+
+Admin-only endpoints, захищені JWT guard та server-side `role=admin` guard:
+
+- `GET /admin/ledger/wallets/:id/events` — chronological immutable stream;
+- `GET /admin/ledger/reconciliation/wallets/:id` — event-derived state проти
+  materialized projection;
+- `GET /admin/ledger/reconciliation/global?from=&to=` — суми debit/credit
+  postings за inclusive period;
+- `POST /admin/ledger/projections/rebuild` — atomic deterministic rebuild усіх
+  wallet projections із event streams.
+
+Rebuild сортує wallets і replay-ить events у `stream_version ASC`; зовнішній
+стан або поточний час у reducer не використовуються. Migration
+`AddHeldBalanceProjection1725000003000` додає held/available поля та DB
+constraints до існуючих projections.
 
 ## Відтворювана перевірка
 

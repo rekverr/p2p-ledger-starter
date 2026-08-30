@@ -1,6 +1,8 @@
 import 'reflect-metadata';
+import { randomUUID } from 'crypto';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
+import { LedgerMaintenanceService } from '../src/admin/ledger-maintenance.service';
 import { User } from '../src/auth/entities/user.entity';
 import { ledgerEntities, ledgerMigrations } from '../src/database/ledger-database.options';
 import { EventStoreService } from '../src/event-store/event-store.service';
@@ -16,6 +18,7 @@ describe('WalletsService PostgreSQL concurrency', () => {
   let users: Repository<User>;
   let service: WalletsService;
   let eventStore: EventStoreService;
+  let maintenance: LedgerMaintenanceService;
   let userSequence = 0;
 
   beforeAll(async () => {
@@ -43,6 +46,7 @@ describe('WalletsService PostgreSQL concurrency', () => {
       dataSource,
       eventStore,
     );
+    maintenance = new LedgerMaintenanceService(dataSource, eventStore);
   });
 
   afterAll(async () => {
@@ -124,14 +128,105 @@ describe('WalletsService PostgreSQL concurrency', () => {
       .findOneByOrFail({ walletId: wallet.id });
 
     expect(projection.balanceMinor).toBe(aggregate.balanceMinor.toString());
+    expect(projection.heldMinor).toBe(aggregate.heldMinor.toString());
+    expect(projection.availableMinor).toBe(aggregate.availableMinor.toString());
     expect(projection.streamVersion).toBe(aggregate.version);
     await expect(service.getById(wallet.id, owner.id)).resolves.toMatchObject({
       balance: '104.45',
     });
   });
 
+  it('places a hold once and excludes it from available funds', async () => {
+    const { owner, wallet } = await createWallet();
+    const holdId = randomUUID();
+
+    await expect(service.placeHold(wallet.id, owner.id, holdId, 60)).resolves.toMatchObject({
+      balance: '100.00',
+      held: '60.00',
+      available: '40.00',
+    });
+    const eventCount = (await eventStore.loadStream(wallet.id)).length;
+    await expect(service.placeHold(wallet.id, owner.id, holdId, 60)).resolves.toMatchObject({
+      held: '60.00',
+      available: '40.00',
+    });
+    expect(await eventStore.loadStream(wallet.id)).toHaveLength(eventCount);
+    await expect(service.placeHold(wallet.id, owner.id, randomUUID(), 40.01)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(service.withdraw(wallet.id, owner.id, 40.01)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('coalesces simultaneous duplicate hold commands into one effect', async () => {
+    const { owner, wallet } = await createWallet();
+    const holdId = randomUUID();
+
+    const results = await Promise.all([
+      service.placeHold(wallet.id, owner.id, holdId, 30),
+      service.placeHold(wallet.id, owner.id, holdId, 30),
+    ]);
+
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ held: '30.00', available: '70.00' });
+    expect(results[1]).toMatchObject({ held: '30.00', available: '70.00' });
+    expect(
+      (await eventStore.loadStream(wallet.id)).filter(
+        ({ eventType }) => eventType === 'FundsHeld',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('prevents overspending through concurrent holds', async () => {
+    const { owner, wallet } = await createWallet();
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 10 }, () =>
+        service.placeHold(wallet.id, owner.id, randomUUID(), 30),
+      ),
+    );
+
+    expect(attempts.filter(({ status }) => status === 'fulfilled')).toHaveLength(3);
+    expect(attempts.filter(({ status }) => status === 'rejected')).toHaveLength(7);
+    await expect(service.getById(wallet.id, owner.id)).resolves.toMatchObject({
+      balance: '100.00',
+      held: '90.00',
+      available: '10.00',
+    });
+  });
+
+  it('releases a hold idempotently', async () => {
+    const { owner, wallet } = await createWallet();
+    const holdId = randomUUID();
+    await service.placeHold(wallet.id, owner.id, holdId, 25);
+    await expect(service.releaseHold(wallet.id, owner.id, holdId)).resolves.toMatchObject({
+      balance: '100.00',
+      held: '0.00',
+      available: '100.00',
+    });
+    const eventCount = (await eventStore.loadStream(wallet.id)).length;
+    await service.releaseHold(wallet.id, owner.id, holdId);
+    expect(await eventStore.loadStream(wallet.id)).toHaveLength(eventCount);
+  });
+
+  it('settles a hold exactly once and keeps the journal balanced', async () => {
+    const { owner, wallet } = await createWallet();
+    const holdId = randomUUID();
+    await service.placeHold(wallet.id, owner.id, holdId, 25);
+    await expect(service.consumeHold(wallet.id, owner.id, holdId)).resolves.toMatchObject({
+      balance: '75.00',
+      held: '0.00',
+      available: '75.00',
+    });
+    const eventCount = (await eventStore.loadStream(wallet.id)).length;
+    await service.consumeHold(wallet.id, owner.id, holdId);
+    expect(await eventStore.loadStream(wallet.id)).toHaveLength(eventCount);
+    await expect(maintenance.reconcileGlobal()).resolves.toMatchObject({ balanced: true });
+  });
+
   it('rebuilds the balance projection from the event stream', async () => {
     const { owner, wallet } = await createWallet();
+    await service.placeHold(wallet.id, owner.id, randomUUID(), 20);
     await service.withdraw(wallet.id, owner.id, 35);
     await dataSource
       .getRepository(WalletBalanceProjection)
@@ -140,8 +235,83 @@ describe('WalletsService PostgreSQL concurrency', () => {
     const rebuilt = await service.rebuildBalanceProjection(wallet.id);
 
     expect(rebuilt.balanceMinor).toBe('6500');
+    expect(rebuilt.heldMinor).toBe('2000');
+    expect(rebuilt.availableMinor).toBe('4500');
     await expect(service.getById(wallet.id, owner.id)).resolves.toMatchObject({
       balance: '65.00',
+      held: '20.00',
+      available: '45.00',
+    });
+  });
+
+  it('detects projection corruption and deterministically rebuilds all wallets', async () => {
+    const { wallet } = await createWallet();
+    await dataSource.query(
+      `UPDATE wallet_balance_projection
+       SET balance_minor = '9999', held_minor = '0', available_minor = '9999'
+       WHERE wallet_id = $1`,
+      [wallet.id],
+    );
+
+    await expect(maintenance.reconcileWallet(wallet.id)).resolves.toMatchObject({
+      consistent: false,
+      eventDerived: { total: '100.00', held: '0.00', available: '100.00' },
+      projection: { total: '99.99', held: '0.00', available: '99.99' },
+    });
+    await expect(maintenance.rebuildAllBalanceProjections()).resolves.toEqual({
+      rebuiltWallets: 1,
+    });
+    await expect(maintenance.reconcileWallet(wallet.id)).resolves.toMatchObject({
+      consistent: true,
+    });
+  });
+
+  it('reconciles the global debit-credit invariant for a period', async () => {
+    const { owner, wallet } = await createWallet();
+    const holdId = randomUUID();
+    await service.deposit(wallet.id, owner.id, 10);
+    await service.placeHold(wallet.id, owner.id, holdId, 20);
+    await service.consumeHold(wallet.id, owner.id, holdId);
+    await service.withdraw(wallet.id, owner.id, 5);
+
+    await expect(
+      maintenance.reconcileGlobal('2020-01-01T00:00:00.000Z', '2100-01-01T00:00:00.000Z'),
+    ).resolves.toMatchObject({
+      transactionCount: 4,
+      creditsMinor: '13500',
+      debitsMinor: '13500',
+      balanced: true,
+    });
+    const log = await maintenance.walletEventLog(wallet.id);
+    expect(log.map(({ streamVersion }) => streamVersion)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('reports an unbalanced journal event instead of hiding reconciliation failure', async () => {
+    const { wallet } = await createWallet();
+    const corruptEventId = randomUUID();
+    await eventStore.append({
+      streamId: wallet.id,
+      aggregateType: 'Wallet',
+      expectedVersion: 2,
+      events: [
+        {
+          eventId: corruptEventId,
+          eventType: 'MoneyDeposited',
+          schemaVersion: 1,
+          payload: {
+            transactionId: randomUUID(),
+            postings: [
+              { accountId: `wallet:${wallet.id}`, amountMinor: '100' },
+              { accountId: 'system:external', amountMinor: '-99' },
+            ],
+          },
+        },
+      ],
+    });
+
+    await expect(maintenance.reconcileGlobal()).resolves.toMatchObject({
+      invalidTransactionEventIds: [corruptEventId],
+      balanced: false,
     });
   });
 
