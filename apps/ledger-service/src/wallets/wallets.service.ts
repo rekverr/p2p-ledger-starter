@@ -5,6 +5,7 @@ import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { ExpectedStreamVersionError } from '../event-store/event-store.errors';
 import { EventStoreService } from '../event-store/event-store.service';
 import { amountToMinorUnits, formatMinorUnits } from '../ledger/domain/ledger-transaction';
+import { OutboxService } from '../messaging/outbox.service';
 import { WalletAggregate } from './domain/wallet.aggregate';
 import { WalletBalanceProjection } from './entities/wallet-balance-projection.entity';
 import { Wallet } from './entities/wallet.entity';
@@ -24,6 +25,7 @@ export class WalletsService {
     private readonly balances: Repository<WalletBalanceProjection>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly eventStore: EventStoreService,
+    private readonly outbox: OutboxService,
   ) {}
 
   async getOrCreateForUser(userId: string, currency = 'USD'): Promise<WalletView> {
@@ -51,6 +53,7 @@ export class WalletsService {
           },
           manager,
         );
+        await this.outbox.enqueueWalletEvents([created], wallet, manager);
         const projection = await balances.save(
           balances.create({
             walletId: wallet.id,
@@ -212,6 +215,7 @@ export class WalletsService {
       },
       manager,
     );
+    await this.outbox.enqueueWalletEvents([stored], wallet, manager);
     const updated = aggregate.apply(stored);
     const projection = await this.project(manager, updated);
     return this.toView(wallet, projection);
@@ -265,6 +269,7 @@ export class WalletsService {
             },
             manager,
           );
+          await this.outbox.enqueueWalletEvents([stored], wallet, manager);
           const updated = aggregate.apply(stored);
           return this.toView(wallet, await this.project(manager, updated));
         });

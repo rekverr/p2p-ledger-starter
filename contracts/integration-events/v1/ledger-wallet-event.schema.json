@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p2p-ledger.local/contracts/integration-events/v1/ledger-wallet-event.schema.json",
+  "title": "Ledger Wallet Integration Event v1",
+  "allOf": [
+    { "$ref": "./envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "eventType": { "pattern": "^ledger\\.wallet\\.[A-Za-z0-9]+$" },
+        "producer": { "const": "ledger-service" },
+        "aggregate": {
+          "type": "object",
+          "properties": { "type": { "const": "Wallet" } }
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "ownerId",
+            "currency",
+            "domainEventType",
+            "domainSchemaVersion",
+            "data"
+          ],
+          "properties": {
+            "ownerId": { "type": "string", "format": "uuid" },
+            "currency": { "type": "string", "minLength": 3, "maxLength": 3 },
+            "domainEventType": { "type": "string", "minLength": 1 },
+            "domainSchemaVersion": { "type": "integer", "minimum": 1 },
+            "data": { "type": "object" }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,8 +1,17 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { TransfersModule } from './transfers/transfers.module';
+import { getPaymentsDatabaseOptions } from './database/payments-database.options';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), TransfersModule],
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: getPaymentsDatabaseOptions,
+    }),
+    TransfersModule,
+  ],
 })
 export class AppModule {}

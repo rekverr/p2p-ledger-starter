@@ -5,4 +5,4 @@ RUN npm ci
 COPY . .
 RUN npm run build
 EXPOSE 3002
-CMD ["node", "dist/main"]
+CMD ["node", "dist/src/main"]

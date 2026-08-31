@@ -6,6 +6,9 @@ import { LedgerMaintenanceService } from '../src/admin/ledger-maintenance.servic
 import { User } from '../src/auth/entities/user.entity';
 import { ledgerEntities, ledgerMigrations } from '../src/database/ledger-database.options';
 import { EventStoreService } from '../src/event-store/event-store.service';
+import { OutboxMessage } from '../src/messaging/entities/outbox-message.entity';
+import { MessagePublisher } from '../src/messaging/message-publisher';
+import { OutboxService } from '../src/messaging/outbox.service';
 import { WalletAggregate } from '../src/wallets/domain/wallet.aggregate';
 import { WalletBalanceProjection } from '../src/wallets/entities/wallet-balance-projection.entity';
 import { Wallet } from '../src/wallets/entities/wallet.entity';
@@ -19,6 +22,8 @@ describe('WalletsService PostgreSQL concurrency', () => {
   let service: WalletsService;
   let eventStore: EventStoreService;
   let maintenance: LedgerMaintenanceService;
+  let outbox: OutboxService;
+  let publisher: jest.Mocked<MessagePublisher>;
   let userSequence = 0;
 
   beforeAll(async () => {
@@ -40,11 +45,14 @@ describe('WalletsService PostgreSQL concurrency', () => {
     await dataSource.initialize();
     users = dataSource.getRepository(User);
     eventStore = new EventStoreService(dataSource);
+    publisher = { publish: jest.fn().mockResolvedValue(undefined) };
+    outbox = new OutboxService(dataSource, publisher);
     service = new WalletsService(
       dataSource.getRepository(Wallet),
       dataSource.getRepository(WalletBalanceProjection),
       dataSource,
       eventStore,
+      outbox,
     );
     maintenance = new LedgerMaintenanceService(dataSource, eventStore);
   });
@@ -55,8 +63,9 @@ describe('WalletsService PostgreSQL concurrency', () => {
 
   beforeEach(async () => {
     userSequence = 0;
+    publisher.publish.mockReset().mockResolvedValue(undefined);
     await dataSource.query(
-      'TRUNCATE ledger_events, wallet_balance_projection, wallets, users CASCADE',
+      'TRUNCATE integration_outbox, ledger_events, wallet_balance_projection, wallets, users CASCADE',
     );
   });
 
@@ -322,5 +331,58 @@ describe('WalletsService PostgreSQL concurrency', () => {
     }));
     await expect(service.withdraw(wallet.id, other.id, 10)).rejects.toBeInstanceOf(NotFoundException);
     await expect(service.getById(wallet.id, other.id)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('persists domain event and outbox message in the same transaction', async () => {
+    const { owner, wallet } = await createWallet(0);
+    const before = await eventStore.loadStream(wallet.id);
+    const failingOutbox = {
+      enqueueWalletEvents: jest.fn().mockRejectedValue(new Error('outbox unavailable')),
+    } as unknown as OutboxService;
+    const failingService = new WalletsService(
+      dataSource.getRepository(Wallet),
+      dataSource.getRepository(WalletBalanceProjection),
+      dataSource,
+      eventStore,
+      failingOutbox,
+    );
+
+    await expect(failingService.deposit(wallet.id, owner.id, 10)).rejects.toThrow(
+      'outbox unavailable',
+    );
+    expect(await eventStore.loadStream(wallet.id)).toHaveLength(before.length);
+    await expect(service.getById(wallet.id, owner.id)).resolves.toMatchObject({
+      balance: '0.00',
+    });
+
+    const storedEvents = await eventStore.loadStream(wallet.id);
+    const messages = await dataSource.getRepository(OutboxMessage).find();
+    expect(messages.map(({ eventId }) => eventId).sort()).toEqual(
+      storedEvents.map(({ eventId }) => eventId).sort(),
+    );
+  });
+
+  it('retries failed outbox publication and marks it only after confirmation', async () => {
+    const { wallet } = await createWallet(0);
+    publisher.publish
+      .mockRejectedValueOnce(new Error('broker unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const firstAttemptAt = new Date(Date.now() + 100);
+
+    await expect(outbox.publishBatch(firstAttemptAt)).resolves.toBe(1);
+    let message = await dataSource.getRepository(OutboxMessage).findOneByOrFail({
+      eventId: (await eventStore.loadStream(wallet.id))[0].eventId,
+    });
+    expect(message).toMatchObject({ attempts: 1, publishedAt: null });
+    expect(message.lastError).toContain('broker unavailable');
+
+    await expect(
+      outbox.publishBatch(new Date(firstAttemptAt.getTime() + 1001)),
+    ).resolves.toBe(1);
+    message = await dataSource.getRepository(OutboxMessage).findOneByOrFail({
+      eventId: message.eventId,
+    });
+    expect(message.publishedAt).toBeInstanceOf(Date);
+    expect(publisher.publish).toHaveBeenCalledTimes(2);
   });
 });

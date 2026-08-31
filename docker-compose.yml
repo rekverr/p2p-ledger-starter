@@ -9,6 +9,65 @@ services:
       - '5433:5432'
     volumes:
       - ledger-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ledger -d ledger']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ledger-data
+
+  payments-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: payments
+      POSTGRES_DB: payments
+    ports:
+      - '5434:5432'
+    volumes:
+      - payments-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U payments -d payments']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - payments-data
+
+  notifications-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: notifications
+      POSTGRES_PASSWORD: notifications
+      POSTGRES_DB: notifications
+    ports:
+      - '5435:5432'
+    volumes:
+      - notifications-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U notifications -d notifications']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - notifications-data
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: p2p
+      RABBITMQ_DEFAULT_PASS: p2p
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   ledger-service:
     build: ./apps/ledger-service
@@ -16,23 +75,43 @@ services:
     environment:
       DATABASE_HOST: ledger-db
     depends_on:
-      - ledger-db
+      ledger-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     ports:
       - '3001:3001'
+    networks:
+      - default
+      - ledger-data
 
   payments-service:
     build: ./apps/payments-service
     env_file: ./apps/payments-service/.env.example
     depends_on:
-      - ledger-service
+      payments-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     ports:
       - '3002:3002'
+    networks:
+      - default
+      - payments-data
 
   notifications-service:
     build: ./apps/notifications-service
     env_file: ./apps/notifications-service/.env.example
+    depends_on:
+      notifications-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     ports:
       - '3003:3003'
+    networks:
+      - default
+      - notifications-data
 
   frontend:
     build: ./apps/frontend
@@ -48,3 +127,14 @@ services:
 
 volumes:
   ledger-db-data:
+  payments-db-data:
+  notifications-db-data:
+  rabbitmq-data:
+
+networks:
+  ledger-data:
+    internal: true
+  payments-data:
+    internal: true
+  notifications-data:
+    internal: true

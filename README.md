@@ -15,8 +15,103 @@
 
 - `apps/payments-service` — лише каркас контролера/DTO, бізнес-логіки саги
   переказу немає (`NotImplementedException`).
-- `apps/notifications-service` — порожній Nest-проєкт, лише `/health`.
+- `apps/notifications-service` — має durable RabbitMQ consumer, inbox
+  deduplication та persistence activity feed; WebSocket fan-out ще не доданий.
 - Форма переказу, split-рахунки, admin-екран на фронтенді.
+
+## Multi-service infrastructure
+
+```mermaid
+flowchart LR
+  FE[Next.js frontend]
+  L[ledger-service]
+  P[payments-service]
+  N[notifications-service]
+  LDB[(ledger PostgreSQL)]
+  PDB[(payments PostgreSQL)]
+  NDB[(notifications PostgreSQL)]
+  RMQ[(RabbitMQ topic exchange)]
+
+  FE -->|HTTP| L
+  FE -->|HTTP| P
+  P -.->|future authenticated HTTP commands| L
+  L -->|local transaction: event store + projection + outbox| LDB
+  P -->|local transaction only| PDB
+  N -->|inbox + activity in one local transaction| NDB
+  LDB -->|outbox relay + publisher confirm| RMQ
+  RMQ -->|durable queue, manual ack| N
+```
+
+Кожен backend container отримує credentials лише своєї database і приєднаний
+лише до її private Docker network. У коді
+`payments-service` і `notifications-service` немає ledger entities або
+connection settings; cross-service state надалі передається лише versioned
+HTTP contracts чи integration events. XA/distributed transactions не
+використовуються.
+
+### ADR: RabbitMQ як event broker
+
+Обрано RabbitMQ 3.13 з durable topic exchange `p2p.domain-events`.
+
+- Kafka дає сильний distributed log і високий throughput, але для локального
+  test project із трьома сервісами потребує непропорційно складнішої
+  експлуатації, partition/retention design та важчого Compose startup.
+- Redis Streams може забезпечити consumer groups, але незалежний fan-out,
+  routing, reclaim pending messages і dead-letter policy потребують більше
+  application-level coordination.
+- RabbitMQ прямо надає durable queues, topic routing, publisher confirms,
+  manual acknowledgements, prefetch та redelivery. Разом з outbox/inbox це дає
+  потрібну at-least-once delivery semantics з мінімальною operational cost.
+
+RabbitMQ не робить delivery exactly-once: duplicate після publish-before-mark
+crash очікуваний і нейтралізується durable consumer inbox.
+
+### Database topology
+
+- `ledger-db` / database `ledger`: users, wallets, immutable event store,
+  projections та `integration_outbox`;
+- `payments-db` / database `payments`: окремі migration history,
+  `integration_outbox` і `processed_messages` foundation. Transfer/saga tables
+  з'являться разом із наступним payments slice;
+- `notifications-db` / database `notifications`: `processed_messages` та
+  `activity_feed`.
+
+Це окремі PostgreSQL containers і volumes, а не просто різні credentials до
+одного shared database instance.
+
+### Versioned integration event contract
+
+Canonical JSON Schemas лежать у `contracts/integration-events/v1`. Envelope
+містить `eventId`, `eventType`, `schemaVersion`, `occurredAt`, producer,
+correlation/trace context, aggregate type/id/version та payload. Wallet payload
+додатково містить owner ID, currency і persisted domain-event type/schema/data.
+
+Routing keys versioned окремо, наприклад
+`ledger.wallet.money-deposited.v1`. Зміна несумісної форми створює нову schema
+version/routing binding; persisted v1 message не переписується.
+
+### Transactional outbox і retry
+
+Ledger command виконує в одній local PostgreSQL transaction:
+
+```text
+append domain event -> update projection -> insert integration_outbox -> commit
+```
+
+Outbox relay атомарно claim-ить due rows короткою lease через
+`FOR UPDATE SKIP LOCKED`, публікує persistent message і чекає RabbitMQ publisher
+confirm. Лише після confirm ставиться `published_at`. Failure залишає row
+pending, збільшує attempts і призначає bounded exponential backoff. Crash після
+broker confirm, але до DB mark, може повторити publish — це навмисна
+at-least-once поведінка без втрати event.
+
+### Consumer inbox/deduplication
+
+Notifications consumer використовує durable queue і manual ack. Перед side
+effect він виконує `INSERT ... ON CONFLICT DO NOTHING` у `processed_messages`.
+Inbox marker та activity-feed insert знаходяться в одній notifications DB
+transaction. Ack відправляється лише після commit; duplicate `eventId`, у тому
+числі після restart process, не повторює side effect.
 
 ## Запуск
 
@@ -118,6 +213,16 @@ Real-DB test виявив, що TypeORM не міг infer PostgreSQL type для
 `User.refreshTokenHash: string | null`. Колонка тепер явно має type `varchar`,
 тому production entities проходять DataSource initialization, а concurrency
 integration test перевіряє саме production `User` і `Wallet` metadata.
+
+### Docker production entrypoint
+
+- **Проблема:** clean Docker build успішно компілював Nest services, але
+  container завершувався з `Cannot find module '/app/dist/main'`.
+- **Причина:** через поточний TypeScript project layout clean output має
+  entrypoint `dist/src/main.js`; локальний stale `dist/main.js` маскував defect.
+- **Виправлення:** `start:prod` і Docker `CMD` усіх трьох backend services
+  використовують фактичний clean-build path. Ізольований Compose smoke test
+  підтверджує startup трьох processes, migrations і broker connection.
 
 ## Event Store foundation
 
@@ -260,6 +365,30 @@ npm run test:integration:concurrency
 npm run test:integration:event-store
 npm run test:integration:migration
 ```
+
+Для service-owned persistence:
+
+```bash
+cd apps/payments-service
+npm test -- --runInBand --no-watchman
+npm run test:integration:persistence
+
+cd ../notifications-service
+npm test -- --runInBand --no-watchman
+npm run test:integration:persistence
+```
+
+Infrastructure verification:
+
+```bash
+docker compose config --quiet
+docker compose build ledger-service payments-service notifications-service
+docker compose up -d
+```
+
+RabbitMQ management UI: `http://localhost:15672` (`p2p` / `p2p` для local
+Compose example only). Production credentials мають надходити через secret
+management, а не використовувати example values.
 
 Остання команда очікує dedicated PostgreSQL database
 `ledger_concurrency_test` на `127.0.0.1:55432`; налаштування можна змінити через

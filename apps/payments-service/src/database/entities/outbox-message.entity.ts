@@ -1,0 +1,36 @@
+import {
+  Check,
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  PrimaryColumn,
+} from 'typeorm';
+
+@Entity('integration_outbox')
+@Check('CHK_payments_outbox_attempts', '"attempts" >= 0')
+@Index('IDX_payments_outbox_pending', ['availableAt'], {
+  where: '"published_at" IS NULL',
+})
+export class PaymentOutboxMessage {
+  @PrimaryColumn('uuid', { name: 'event_id' })
+  eventId: string;
+
+  @Column('varchar', { name: 'routing_key', length: 200 })
+  routingKey: string;
+
+  @Column('jsonb')
+  event: object;
+
+  @Column('integer', { default: 0 })
+  attempts: number;
+
+  @Column('timestamptz', { name: 'available_at' })
+  availableAt: Date;
+
+  @Column('timestamptz', { name: 'published_at', nullable: true })
+  publishedAt: Date | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+}

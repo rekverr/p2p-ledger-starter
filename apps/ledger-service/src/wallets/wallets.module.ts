@@ -5,11 +5,13 @@ import { WalletsController } from './wallets.controller';
 import { Wallet } from './entities/wallet.entity';
 import { WalletBalanceProjection } from './entities/wallet-balance-projection.entity';
 import { EventStoreModule } from '../event-store/event-store.module';
+import { OutboxModule } from '../messaging/outbox.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Wallet, WalletBalanceProjection]),
     EventStoreModule,
+    OutboxModule,
   ],
   controllers: [WalletsController],
   providers: [WalletsService],
