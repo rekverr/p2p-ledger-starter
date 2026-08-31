@@ -12,6 +12,7 @@ import { OutboxService } from '../src/messaging/outbox.service';
 import { WalletAggregate } from '../src/wallets/domain/wallet.aggregate';
 import { WalletBalanceProjection } from '../src/wallets/entities/wallet-balance-projection.entity';
 import { Wallet } from '../src/wallets/entities/wallet.entity';
+import { LedgerTransferSettlement } from '../src/wallets/entities/ledger-transfer-settlement.entity';
 import { WalletsService, WalletView } from '../src/wallets/wallets.service';
 
 jest.setTimeout(30_000);
@@ -50,6 +51,8 @@ describe('WalletsService PostgreSQL concurrency', () => {
     service = new WalletsService(
       dataSource.getRepository(Wallet),
       dataSource.getRepository(WalletBalanceProjection),
+      dataSource.getRepository(User),
+      dataSource.getRepository(LedgerTransferSettlement),
       dataSource,
       eventStore,
       outbox,
@@ -65,7 +68,7 @@ describe('WalletsService PostgreSQL concurrency', () => {
     userSequence = 0;
     publisher.publish.mockReset().mockResolvedValue(undefined);
     await dataSource.query(
-      'TRUNCATE integration_outbox, ledger_events, wallet_balance_projection, wallets, users CASCADE',
+      'TRUNCATE ledger_transfer_settlements, integration_outbox, ledger_events, wallet_balance_projection, wallets, users CASCADE',
     );
   });
 
@@ -233,6 +236,76 @@ describe('WalletsService PostgreSQL concurrency', () => {
     await expect(maintenance.reconcileGlobal()).resolves.toMatchObject({ balanced: true });
   });
 
+  it('atomically settles an idempotent transfer between two wallets', async () => {
+    const sender = await createWallet(100);
+    const receiver = await createWallet(0);
+    const transferId = randomUUID();
+    const validation = await service.validateTransfer({
+      transferId,
+      senderUserId: sender.owner.id,
+      senderWalletId: sender.wallet.id,
+      receiverReference: receiver.owner.email,
+      amount: 40,
+      currency: 'USD',
+    });
+    expect(validation.receiverWalletId).toBe(receiver.wallet.id);
+    await service.placeTransferHold(transferId, {
+      senderUserId: sender.owner.id,
+      senderWalletId: sender.wallet.id,
+      amount: 40,
+    });
+
+    const command = {
+      senderUserId: sender.owner.id,
+      senderWalletId: sender.wallet.id,
+      receiverWalletId: receiver.wallet.id,
+      amount: 40,
+      currency: 'USD',
+    };
+    await Promise.all([
+      service.settleTransfer(transferId, command),
+      service.settleTransfer(transferId, command),
+    ]);
+
+    await expect(
+      service.getById(sender.wallet.id, sender.owner.id),
+    ).resolves.toMatchObject({ balance: '60.00', held: '0.00' });
+    await expect(
+      service.getById(receiver.wallet.id, receiver.owner.id),
+    ).resolves.toMatchObject({ balance: '40.00', held: '0.00' });
+    await expect(
+      dataSource.getRepository(LedgerTransferSettlement).count(),
+    ).resolves.toBe(1);
+    await expect(
+      service.releaseTransferHold(transferId, {
+        senderUserId: sender.owner.id,
+        senderWalletId: sender.wallet.id,
+      }),
+    ).resolves.toEqual({ outcome: 'already_settled' });
+    await expect(maintenance.reconcileGlobal()).resolves.toMatchObject({
+      balanced: true,
+    });
+  });
+
+  it('releases a transfer hold repeatedly without losing money', async () => {
+    const { owner, wallet } = await createWallet(100);
+    const transferId = randomUUID();
+    const command = { senderUserId: owner.id, senderWalletId: wallet.id };
+    await service.placeTransferHold(transferId, { ...command, amount: 35 });
+
+    await expect(service.releaseTransferHold(transferId, command)).resolves.toEqual({
+      outcome: 'released',
+    });
+    await expect(service.releaseTransferHold(transferId, command)).resolves.toEqual({
+      outcome: 'released',
+    });
+    await expect(service.getById(wallet.id, owner.id)).resolves.toMatchObject({
+      balance: '100.00',
+      held: '0.00',
+      available: '100.00',
+    });
+  });
+
   it('rebuilds the balance projection from the event stream', async () => {
     const { owner, wallet } = await createWallet();
     await service.placeHold(wallet.id, owner.id, randomUUID(), 20);
@@ -342,6 +415,8 @@ describe('WalletsService PostgreSQL concurrency', () => {
     const failingService = new WalletsService(
       dataSource.getRepository(Wallet),
       dataSource.getRepository(WalletBalanceProjection),
+      dataSource.getRepository(User),
+      dataSource.getRepository(LedgerTransferSettlement),
       dataSource,
       eventStore,
       failingOutbox,

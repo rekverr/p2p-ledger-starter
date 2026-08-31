@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p2p-ledger.local/contracts/v1/payments-transfer-completed.schema.json",
+  "title": "Payments Transfer Completed v1",
+  "allOf": [
+    { "$ref": "./envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "eventType": { "const": "payments.transfer.Completed" },
+        "schemaVersion": { "const": 1 },
+        "producer": { "const": "payments-service" },
+        "aggregate": {
+          "type": "object",
+          "properties": {
+            "type": { "const": "Transfer" }
+          }
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "senderUserId",
+            "senderWalletId",
+            "receiverWalletId",
+            "amountMinor",
+            "currency",
+            "status"
+          ],
+          "properties": {
+            "senderUserId": { "type": "string", "format": "uuid" },
+            "senderWalletId": { "type": "string", "format": "uuid" },
+            "receiverWalletId": { "type": "string", "format": "uuid" },
+            "amountMinor": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+            "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+            "status": { "const": "Completed" }
+          }
+        }
+      }
+    }
+  ]
+}

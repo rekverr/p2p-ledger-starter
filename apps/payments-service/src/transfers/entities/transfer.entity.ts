@@ -15,6 +15,9 @@ import { TransferStatus } from '../domain/transfer-status';
 @Unique('UQ_transfers_sender_idempotency', ['senderUserId', 'idempotencyKey'])
 @Index('IDX_transfers_sender_created', ['senderUserId', 'createdAt'])
 @Index('IDX_transfers_status_retry', ['status', 'nextRetryAt'])
+@Index('IDX_transfers_recovery', ['nextRetryAt', 'leaseUntil'], {
+  where: `"status" NOT IN ('Completed', 'Failed')`,
+})
 @Check('CHK_transfers_amount_positive', '"amount_minor" > 0')
 @Check('CHK_transfers_retry_count', '"retry_count" >= 0')
 @Check(
@@ -33,6 +36,9 @@ export class Transfer {
 
   @Column('varchar', { name: 'receiver_reference', length: 320 })
   receiverReference: string;
+
+  @Column('uuid', { name: 'receiver_wallet_id', nullable: true })
+  receiverWalletId: string | null;
 
   @Column('bigint', { name: 'amount_minor' })
   amountMinor: string;
@@ -60,6 +66,18 @@ export class Transfer {
 
   @Column('timestamptz', { name: 'next_retry_at', nullable: true })
   nextRetryAt: Date | null;
+
+  @Column('boolean', { name: 'hold_may_exist', default: false })
+  holdMayExist: boolean;
+
+  @Column('timestamptz', { name: 'last_attempt_at', nullable: true })
+  lastAttemptAt: Date | null;
+
+  @Column('uuid', { name: 'lease_owner', nullable: true })
+  leaseOwner: string | null;
+
+  @Column('timestamptz', { name: 'lease_until', nullable: true })
+  leaseUntil: Date | null;
 
   @VersionColumn({ name: 'version' })
   version: number;

@@ -1,7 +1,13 @@
 import { randomUUID } from 'crypto';
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, ILike, In, Repository } from 'typeorm';
+import { User } from '../auth/entities/user.entity';
 import { ExpectedStreamVersionError } from '../event-store/event-store.errors';
 import { EventStoreService } from '../event-store/event-store.service';
 import { amountToMinorUnits, formatMinorUnits } from '../ledger/domain/ledger-transaction';
@@ -9,6 +15,13 @@ import { OutboxService } from '../messaging/outbox.service';
 import { WalletAggregate } from './domain/wallet.aggregate';
 import { WalletBalanceProjection } from './entities/wallet-balance-projection.entity';
 import { Wallet } from './entities/wallet.entity';
+import { LedgerTransferSettlement } from './entities/ledger-transfer-settlement.entity';
+import {
+  HoldInternalTransferDto,
+  ReleaseInternalTransferDto,
+  SettleInternalTransferDto,
+  ValidateInternalTransferDto,
+} from './dto/internal-transfer.dto';
 
 export type WalletView = Wallet & {
   balance: string;
@@ -23,6 +36,9 @@ export class WalletsService {
     @InjectRepository(Wallet) private readonly wallets: Repository<Wallet>,
     @InjectRepository(WalletBalanceProjection)
     private readonly balances: Repository<WalletBalanceProjection>,
+    @InjectRepository(User) private readonly users: Repository<User>,
+    @InjectRepository(LedgerTransferSettlement)
+    private readonly transferSettlements: Repository<LedgerTransferSettlement>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly eventStore: EventStoreService,
     private readonly outbox: OutboxService,
@@ -123,6 +139,210 @@ export class WalletsService {
 
   consumeHold(walletId: string, ownerId: string, holdId: string): Promise<WalletView> {
     return this.executeHoldCommand(walletId, ownerId, holdId, 'consume');
+  }
+
+  async validateTransfer(
+    command: ValidateInternalTransferDto,
+  ): Promise<{ receiverWalletId: string }> {
+    this.toPositiveMinorUnits(command.amount);
+    const sender = await this.wallets.findOne({
+      where: {
+        id: command.senderWalletId,
+        ownerId: command.senderUserId,
+        currency: command.currency,
+      },
+    });
+    if (!sender) throw new NotFoundException('Sender wallet not found');
+
+    let receiver = this.isUuid(command.receiverReference)
+      ? await this.wallets.findOne({
+          where: { id: command.receiverReference, currency: command.currency },
+        })
+      : null;
+    if (!receiver) {
+      const receiverUser = await this.users.findOne({
+        where: { email: ILike(command.receiverReference) },
+      });
+      if (!receiverUser) throw new NotFoundException('Receiver not found');
+      receiver = await this.wallets.findOne({
+        where: { ownerId: receiverUser.id, currency: command.currency },
+      });
+      if (!receiver) {
+        const created = await this.getOrCreateForUser(
+          receiverUser.id,
+          command.currency,
+        );
+        receiver = await this.wallets.findOneByOrFail({ id: created.id });
+      }
+    }
+    if (receiver.id === sender.id) {
+      throw new BadRequestException('Sender and receiver wallets must differ');
+    }
+    return { receiverWalletId: receiver.id };
+  }
+
+  placeTransferHold(
+    transferId: string,
+    command: HoldInternalTransferDto,
+  ): Promise<WalletView> {
+    return this.placeHold(
+      command.senderWalletId,
+      command.senderUserId,
+      transferId,
+      command.amount,
+    );
+  }
+
+  async releaseTransferHold(
+    transferId: string,
+    command: ReleaseInternalTransferDto,
+  ): Promise<{ outcome: 'released' | 'already_settled' }> {
+    if (await this.transferSettlements.exist({ where: { transferId } })) {
+      return { outcome: 'already_settled' };
+    }
+    try {
+      await this.executeHoldCommand(
+        command.senderWalletId,
+        command.senderUserId,
+        transferId,
+        'release',
+        undefined,
+        true,
+      );
+      return { outcome: 'released' };
+    } catch (error: unknown) {
+      if (await this.transferSettlements.exist({ where: { transferId } })) {
+        return { outcome: 'already_settled' };
+      }
+      throw error;
+    }
+  }
+
+  async settleTransfer(
+    transferId: string,
+    command: SettleInternalTransferDto,
+  ): Promise<{ sender: WalletView; receiver: WalletView }> {
+    const amountMinor = this.toPositiveMinorUnits(command.amount);
+    for (let attempt = 1; attempt <= MAX_CONCURRENCY_RETRIES; attempt += 1) {
+      const completed = await this.transferSettlements.findOneBy({ transferId });
+      if (completed) {
+        this.assertSettlementMatches(completed, command, amountMinor);
+        return this.readSettlementWallets(completed);
+      }
+      try {
+        return await this.dataSource.transaction(async (manager) => {
+          const receipts = manager.getRepository(LedgerTransferSettlement);
+          const raced = await receipts.findOneBy({ transferId });
+          if (raced) {
+            this.assertSettlementMatches(raced, command, amountMinor);
+            return this.readSettlementWallets(raced, manager);
+          }
+
+          const wallets = manager.getRepository(Wallet);
+          const sender = await wallets.findOne({
+            where: {
+              id: command.senderWalletId,
+              ownerId: command.senderUserId,
+              currency: command.currency,
+            },
+          });
+          const receiver = await wallets.findOne({
+            where: { id: command.receiverWalletId, currency: command.currency },
+          });
+          if (!sender || !receiver) {
+            throw new NotFoundException('Transfer wallet not found');
+          }
+          if (sender.id === receiver.id) {
+            throw new BadRequestException('Sender and receiver wallets must differ');
+          }
+
+          const senderAggregate = WalletAggregate.rehydrate(
+            sender.id,
+            await this.eventStore.loadStream(sender.id, 1, manager),
+          );
+          const receiverAggregate = WalletAggregate.rehydrate(
+            receiver.id,
+            await this.eventStore.loadStream(receiver.id, 1, manager),
+          );
+          this.assertAggregateIdentity(sender, senderAggregate);
+          this.assertAggregateIdentity(receiver, receiverAggregate);
+          const hold = senderAggregate.holds.get(transferId);
+          if (!hold) throw new NotFoundException('Transfer hold not found');
+          if (hold.amountMinor !== amountMinor) {
+            throw new ConflictException('Transfer hold amount does not match');
+          }
+
+          const transactionId = transferId;
+          let debitEvent;
+          try {
+            debitEvent = senderAggregate.consumeHold(
+              transferId,
+              randomUUID(),
+              transactionId,
+            );
+          } catch (error: unknown) {
+            this.throwHoldDomainError(error);
+          }
+          if (!debitEvent) {
+            throw new ConflictException('Transfer was consumed without a receipt');
+          }
+          const creditEvent = receiverAggregate.deposit(
+            amountMinor,
+            randomUUID(),
+            transactionId,
+          );
+          const [storedDebit] = await this.eventStore.appendWithinTransaction(
+            {
+              streamId: sender.id,
+              aggregateType: 'Wallet',
+              expectedVersion: senderAggregate.version,
+              events: [debitEvent],
+            },
+            manager,
+          );
+          const [storedCredit] = await this.eventStore.appendWithinTransaction(
+            {
+              streamId: receiver.id,
+              aggregateType: 'Wallet',
+              expectedVersion: receiverAggregate.version,
+              events: [creditEvent],
+            },
+            manager,
+          );
+          await this.outbox.enqueueWalletEvents([storedDebit], sender, manager);
+          await this.outbox.enqueueWalletEvents([storedCredit], receiver, manager);
+          const senderProjection = await this.project(
+            manager,
+            senderAggregate.apply(storedDebit),
+          );
+          const receiverProjection = await this.project(
+            manager,
+            receiverAggregate.apply(storedCredit),
+          );
+          await receipts.insert({
+            transferId,
+            senderWalletId: sender.id,
+            receiverWalletId: receiver.id,
+            amountMinor: amountMinor.toString(),
+            currency: command.currency,
+          });
+          return {
+            sender: this.toView(sender, senderProjection),
+            receiver: this.toView(receiver, receiverProjection),
+          };
+        });
+      } catch (error: unknown) {
+        if (
+          (error instanceof ExpectedStreamVersionError ||
+            this.isUniqueViolation(error)) &&
+          attempt < MAX_CONCURRENCY_RETRIES
+        ) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error('Unreachable transfer settlement concurrency retry state');
   }
 
   rebuildBalanceProjection(walletId: string): Promise<WalletBalanceProjection> {
@@ -227,6 +447,7 @@ export class WalletsService {
     holdId: string,
     operation: 'place' | 'release' | 'consume',
     amountMinor?: bigint,
+    allowMissingRelease = false,
   ): Promise<WalletView> {
     const eventId = randomUUID();
     const transactionId = randomUUID();
@@ -250,7 +471,11 @@ export class WalletsService {
               }
               domainEvent = aggregate.placeHold(holdId, amountMinor, eventId);
             } else if (operation === 'release') {
-              domainEvent = aggregate.releaseHold(holdId, eventId);
+              if (allowMissingRelease && !aggregate.holds.has(holdId)) {
+                domainEvent = null;
+              } else {
+                domainEvent = aggregate.releaseHold(holdId, eventId);
+              }
             } else {
               domainEvent = aggregate.consumeHold(holdId, eventId, transactionId);
             }
@@ -342,6 +567,61 @@ export class WalletsService {
     ) {
       throw new Error(`Wallet stream identity mismatch for ${wallet.id}`);
     }
+  }
+
+  private toPositiveMinorUnits(amount: number): bigint {
+    let amountMinor: bigint;
+    try {
+      amountMinor = amountToMinorUnits(amount);
+    } catch (error: unknown) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Invalid amount',
+      );
+    }
+    if (amountMinor <= 0n) throw new BadRequestException('Amount must be positive');
+    return amountMinor;
+  }
+
+  private assertSettlementMatches(
+    settlement: LedgerTransferSettlement,
+    command: SettleInternalTransferDto,
+    amountMinor: bigint,
+  ): void {
+    if (
+      settlement.senderWalletId !== command.senderWalletId ||
+      settlement.receiverWalletId !== command.receiverWalletId ||
+      settlement.amountMinor !== amountMinor.toString() ||
+      settlement.currency !== command.currency
+    ) {
+      throw new ConflictException(
+        'Transfer ID was already settled with different parameters',
+      );
+    }
+  }
+
+  private async readSettlementWallets(
+    settlement: LedgerTransferSettlement,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<{ sender: WalletView; receiver: WalletView }> {
+    const wallets = manager.getRepository(Wallet);
+    const balances = manager.getRepository(WalletBalanceProjection);
+    const [sender, receiver, senderProjection, receiverProjection] =
+      await Promise.all([
+        wallets.findOneByOrFail({ id: settlement.senderWalletId }),
+        wallets.findOneByOrFail({ id: settlement.receiverWalletId }),
+        balances.findOneByOrFail({ walletId: settlement.senderWalletId }),
+        balances.findOneByOrFail({ walletId: settlement.receiverWalletId }),
+      ]);
+    return {
+      sender: this.toView(sender, senderProjection),
+      receiver: this.toView(receiver, receiverProjection),
+    };
+  }
+
+  private isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    );
   }
 
   private isUniqueViolation(error: unknown): boolean {

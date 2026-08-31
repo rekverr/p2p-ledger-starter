@@ -9,6 +9,8 @@ import { StoredEvent } from '../event-store/entities/stored-event.entity';
 import { OutboxMessage } from '../messaging/entities/outbox-message.entity';
 import { WalletBalanceProjection } from '../wallets/entities/wallet-balance-projection.entity';
 import { Wallet } from '../wallets/entities/wallet.entity';
+import { LedgerTransferSettlement } from '../wallets/entities/ledger-transfer-settlement.entity';
+import { CreateLedgerTransferSettlements1725000005000 } from './migrations/1725000005000-CreateLedgerTransferSettlements';
 
 export const ledgerEntities = [
   User,
@@ -16,6 +18,7 @@ export const ledgerEntities = [
   StoredEvent,
   WalletBalanceProjection,
   OutboxMessage,
+  LedgerTransferSettlement,
 ];
 export const ledgerMigrations = [
   CreateLedgerBaseSchema1725000000000,
@@ -23,6 +26,7 @@ export const ledgerMigrations = [
   EventSourceWalletBalances1725000002000,
   AddHeldBalanceProjection1725000003000,
   CreateIntegrationOutbox1725000004000,
+  CreateLedgerTransferSettlements1725000005000,
 ];
 
 export function getLedgerDatabaseOptions(): DataSourceOptions {

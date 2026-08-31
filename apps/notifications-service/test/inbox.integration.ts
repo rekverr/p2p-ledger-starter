@@ -107,6 +107,35 @@ describe('notifications durable inbox', () => {
     ).resolves.toBe(1);
   });
 
+  it('attributes a transfer completion event to the authenticated sender', async () => {
+    const senderUserId = randomUUID();
+    const message: IntegrationEventEnvelope = {
+      ...event(),
+      eventType: 'payments.transfer.Completed',
+      producer: 'payments-service',
+      aggregate: { type: 'Transfer', id: randomUUID(), version: 5 },
+      payload: {
+        senderUserId,
+        senderWalletId: randomUUID(),
+        receiverWalletId: randomUUID(),
+        amountMinor: '4000',
+        currency: 'USD',
+        status: 'Completed',
+      },
+    };
+    await new InboxService(dataSource).process(
+      'notifications.activity-feed.v1',
+      message,
+      (manager, current) => activities.record(manager, current),
+    );
+
+    await expect(
+      dataSource.getRepository(ActivityFeedItem).findOneByOrFail({
+        eventId: message.eventId,
+      }),
+    ).resolves.toMatchObject({ userId: senderUserId });
+  });
+
   it('contains no ledger or payments persistence tables', async () => {
     const tables = (await dataSource.query(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`,

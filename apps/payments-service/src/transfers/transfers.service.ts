@@ -23,6 +23,7 @@ export interface TransferView {
   senderUserId: string;
   senderWalletId: string;
   receiverReference: string;
+  receiverWalletId: string | null;
   amount: string;
   currency: string;
   status: TransferStatus;
@@ -74,6 +75,11 @@ export class TransfersService {
       failureMessage: null,
       retryCount: 0,
       nextRetryAt: null,
+      receiverWalletId: null,
+      holdMayExist: false,
+      lastAttemptAt: null,
+      leaseOwner: null,
+      leaseUntil: null,
       version: 1,
     });
 
@@ -187,6 +193,7 @@ export class TransfersService {
       senderUserId: transfer.senderUserId,
       senderWalletId: transfer.senderWalletId,
       receiverReference: transfer.receiverReference,
+      receiverWalletId: transfer.receiverWalletId,
       amount: this.formatMinorUnits(BigInt(transfer.amountMinor)),
       currency: transfer.currency,
       status: transfer.status,

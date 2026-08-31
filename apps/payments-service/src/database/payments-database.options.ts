@@ -4,6 +4,7 @@ import { PaymentProcessedMessage } from './entities/processed-message.entity';
 import { CreatePaymentsMessagingInfrastructure1725001000000 } from './migrations/1725001000000-CreatePaymentsMessagingInfrastructure';
 import { CreateTransfers1725001001000 } from './migrations/1725001001000-CreateTransfers';
 import { Transfer } from '../transfers/entities/transfer.entity';
+import { CreateTransferSaga1725001002000 } from './migrations/1725001002000-CreateTransferSaga';
 
 export const paymentsEntities = [
   PaymentOutboxMessage,
@@ -13,6 +14,7 @@ export const paymentsEntities = [
 export const paymentsMigrations = [
   CreatePaymentsMessagingInfrastructure1725001000000,
   CreateTransfers1725001001000,
+  CreateTransferSaga1725001002000,
 ];
 
 export function getPaymentsDatabaseOptions(): DataSourceOptions {

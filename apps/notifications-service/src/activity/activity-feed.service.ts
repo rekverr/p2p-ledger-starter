@@ -9,7 +9,7 @@ export class ActivityFeedService {
     manager: EntityManager,
     event: IntegrationEventEnvelope,
   ): Promise<void> {
-    const ownerId = event.payload.ownerId;
+    const ownerId = event.payload.ownerId ?? event.payload.senderUserId;
     await manager.getRepository(ActivityFeedItem).insert({
       eventId: event.eventId,
       userId: typeof ownerId === 'string' ? ownerId : null,

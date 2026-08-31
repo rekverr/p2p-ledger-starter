@@ -10,7 +10,11 @@ export enum TransferStatus {
 
 const ALLOWED_TRANSITIONS: Readonly<Record<TransferStatus, readonly TransferStatus[]>> = {
   [TransferStatus.Pending]: [TransferStatus.Validating, TransferStatus.Failed],
-  [TransferStatus.Validating]: [TransferStatus.FundsHeld, TransferStatus.Failed],
+  [TransferStatus.Validating]: [
+    TransferStatus.FundsHeld,
+    TransferStatus.Compensating,
+    TransferStatus.Failed,
+  ],
   [TransferStatus.FundsHeld]: [
     TransferStatus.Processing,
     TransferStatus.Compensating,
@@ -19,7 +23,10 @@ const ALLOWED_TRANSITIONS: Readonly<Record<TransferStatus, readonly TransferStat
     TransferStatus.Completed,
     TransferStatus.Compensating,
   ],
-  [TransferStatus.Compensating]: [TransferStatus.Failed],
+  [TransferStatus.Compensating]: [
+    TransferStatus.Completed,
+    TransferStatus.Failed,
+  ],
   [TransferStatus.Completed]: [],
   [TransferStatus.Failed]: [],
 };

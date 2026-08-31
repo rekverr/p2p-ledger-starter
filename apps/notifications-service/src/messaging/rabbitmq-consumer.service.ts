@@ -39,6 +39,7 @@ export class RabbitMqConsumerService
       arguments: { 'x-dead-letter-exchange': deadLetterExchange },
     });
     await this.channel.bindQueue(queue, exchange, 'ledger.#');
+    await this.channel.bindQueue(queue, exchange, 'payments.#');
     await this.channel.prefetch(Number(process.env.RABBITMQ_PREFETCH ?? 20));
     await this.channel.consume(queue, (message) => void this.consume(message), {
       noAck: false,

@@ -9,14 +9,15 @@
 - `apps/ledger-service` — автентифікація, event-sourced wallets, double-entry
   journal, CQRS balance/hold projection та admin reconciliation API.
 - `apps/payments-service` — durable transfer creation, authenticated sender
-  context, PostgreSQL-backed `Idempotency-Key` і foundation state machine.
+  context, PostgreSQL-backed `Idempotency-Key`, orchestrated saga, recovery
+  worker та transactional completion outbox.
 - `apps/frontend` — сторінки логіну, реєстрації та список гаманців (Next.js
   App Router, Server Component + API-роут-проксі для авторизації).
 
 ## Що ще НЕ реалізовано
 
-- `apps/payments-service` — кроки transfer saga, ledger calls, compensation та
-  lifecycle workers ще не реалізовані.
+- FX, fraud/limit provider та split-payment orchestration ще не реалізовані;
+  same-currency transfer rules перевіряються ledger-service.
 - `apps/notifications-service` — має durable RabbitMQ consumer, inbox
   deduplication та persistence activity feed; WebSocket fan-out ще не доданий.
 - Форма переказу, split-рахунки, admin-екран на фронтенді.
@@ -36,9 +37,10 @@ flowchart LR
 
   FE -->|HTTP| L
   FE -->|HTTP| P
-  P -.->|future authenticated HTTP commands| L
+  P -->|authenticated idempotent transfer commands| L
   L -->|local transaction: event store + projection + outbox| LDB
-  P -->|local transaction: transfer + idempotency| PDB
+  P -->|local transaction: saga state + completion outbox| PDB
+  PDB -->|outbox relay + publisher confirm| RMQ
   N -->|inbox + activity in one local transaction| NDB
   LDB -->|outbox relay + publisher confirm| RMQ
   RMQ -->|durable queue, manual ack| N
@@ -105,8 +107,64 @@ Pending -> Failed
 ```
 
 `Completed` і `Failed` terminal. State update використовує optimistic entity
-version та умову на попередні status/version. Це лише foundation: saga steps
-не запускаються автоматично в цьому slice.
+version та умову на попередні status/version.
+
+### ADR: orchestrated transfer saga
+
+`payments-service` є власником transfer lifecycle, тому orchestration розміщена
+саме тут. Це залишає ledger власником лише фінансових invariants та event
+history, а notifications — downstream consumer. Choreography для короткого
+послідовного flow ускладнила б визначення timeout/compensation owner і recovery
+stuck transfers без додаткової користі.
+
+```text
+Pending
+  -> Validating
+  -> FundsHeld
+  -> Processing
+  -> Completed
+
+Validating/FundsHeld/Processing
+  -> Compensating
+  -> Failed
+
+Compensating --ledger reports already settled--> Completed
+```
+
+Saga state, resolved receiver wallet, retry counters, next retry time,
+`hold_may_exist` та expiring worker lease зберігаються в payments PostgreSQL.
+Recovery worker claim-ить due transfer через `FOR UPDATE SKIP LOCKED`; external
+commands залишаються idempotent, тому lease expiry або duplicate worker delivery
+не створюють повторного monetary effect.
+
+### Compensation matrix
+
+- **Validate receiver/rules.** Success зберігає resolved receiver wallet.
+  Retryable network/5xx/429/timeout отримує bounded HTTP retry, потім persisted
+  exponential retry. Definitive 4xx до hold завершує transfer як `Failed`.
+  Compensation не потрібна.
+- **Place hold.** Success переводить у `FundsHeld`. Command ID дорівнює transfer
+  ID, тому retry не створює другий hold. Timeout вважається ambiguous і
+  `hold_may_exist` записується до HTTP call. Після вичерпання step attempts saga
+  переходить у `Compensating` і виконує idempotent release.
+- **Settle.** Ledger в одній local transaction consume-ить sender hold, credit-ить
+  receiver stream, оновлює обидві projections/outboxes та пише unique settlement
+  receipt за transfer ID. Retryable failure повторює той самий command. Terminal
+  failure або exhausted ambiguous attempts запускає release. Якщо settlement
+  фактично committed до timeout, release повертає `already_settled`, і saga
+  безпечно завершується `Completed`.
+- **Release/compensation.** `released` або відсутній hold дає `Failed` без зміни
+  total balance; `already_settled` дає `Completed`. Будь-яка недоступність ledger
+  залишає persisted `Compensating` з наступним retry — hold не губиться в
+  terminal state без recovery path.
+- **Publish completion.** `Completed` state і versioned
+  `payments.transfer.completed.v1` записуються атомарно з payments outbox.
+  Publisher confirm, lease та backoff забезпечують at-least-once delivery;
+  consumers дедуплікують за `eventId`.
+
+Ledger HTTP adapter має per-attempt timeout, bounded exponential retry та
+process-local circuit breaker. Circuit-open є retryable результатом для
+persisted saga; correctness не залежить від пам'яті circuit breaker.
 
 ### Versioned integration event contract
 
@@ -403,6 +461,7 @@ cd apps/payments-service
 npm test -- --runInBand --no-watchman
 npm run test:integration:persistence
 npm run test:integration:transfers
+npm run test:integration:saga
 
 cd ../notifications-service
 npm test -- --runInBand --no-watchman

@@ -28,8 +28,17 @@ export class PaymentOutboxMessage {
   @Column('timestamptz', { name: 'available_at' })
   availableAt: Date;
 
+  @Column('timestamptz', { name: 'locked_until', nullable: true })
+  lockedUntil: Date | null;
+
+  @Column('uuid', { name: 'lock_id', nullable: true })
+  lockId: string | null;
+
   @Column('timestamptz', { name: 'published_at', nullable: true })
   publishedAt: Date | null;
+
+  @Column('text', { name: 'last_error', nullable: true })
+  lastError: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
