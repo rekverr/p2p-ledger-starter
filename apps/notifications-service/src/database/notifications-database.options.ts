@@ -2,9 +2,13 @@ import { DataSourceOptions } from 'typeorm';
 import { ActivityFeedItem } from './entities/activity-feed-item.entity';
 import { ProcessedMessage } from './entities/processed-message.entity';
 import { CreateNotificationsPersistence1725002000000 } from './migrations/1725002000000-CreateNotificationsPersistence';
+import { IndexActivityFeedQueries1725002001000 } from './migrations/1725002001000-IndexActivityFeedQueries';
 
 export const notificationsEntities = [ProcessedMessage, ActivityFeedItem];
-export const notificationsMigrations = [CreateNotificationsPersistence1725002000000];
+export const notificationsMigrations = [
+  CreateNotificationsPersistence1725002000000,
+  IndexActivityFeedQueries1725002001000,
+];
 
 export function getNotificationsDatabaseOptions(): DataSourceOptions {
   return {

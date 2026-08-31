@@ -119,6 +119,7 @@ services:
     environment:
       LEDGER_SERVICE_URL: http://ledger-service:3001
       PAYMENTS_SERVICE_URL: http://payments-service:3002
+      NOTIFICATIONS_SERVICE_URL: http://notifications-service:3003
     depends_on:
       - ledger-service
       - payments-service

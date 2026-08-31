@@ -11,6 +11,8 @@
 - `apps/payments-service` — durable transfer creation, authenticated sender
   context, PostgreSQL-backed `Idempotency-Key`, orchestrated saga, recovery
   worker та transactional completion outbox.
+- `apps/notifications-service` — durable RabbitMQ consumer/inbox, persisted
+  owner-scoped activity feed та JWT-authenticated WebSocket fan-out.
 - `apps/frontend` — сторінки логіну, реєстрації та список гаманців (Next.js
   App Router, Server Component + API-роут-проксі для авторизації).
 
@@ -18,8 +20,6 @@
 
 - FX, fraud/limit provider та split-payment orchestration ще не реалізовані;
   same-currency transfer rules перевіряються ledger-service.
-- `apps/notifications-service` — має durable RabbitMQ consumer, inbox
-  deduplication та persistence activity feed; WebSocket fan-out ще не доданий.
 - Форма переказу, split-рахунки, admin-екран на фронтенді.
 
 ## Multi-service infrastructure
@@ -44,6 +44,7 @@ flowchart LR
   N -->|inbox + activity in one local transaction| NDB
   LDB -->|outbox relay + publisher confirm| RMQ
   RMQ -->|durable queue, manual ack| N
+  N -->|JWT-authenticated user room| FE
 ```
 
 Кожен backend container отримує credentials лише своєї database і приєднаний
@@ -194,11 +195,35 @@ at-least-once поведінка без втрати event.
 
 ### Consumer inbox/deduplication
 
-Notifications consumer використовує durable queue і manual ack. Перед side
+Notifications consumer підписаний на versioned contracts за routing keys
+`ledger.#` і `payments.#`, використовує durable queue і manual ack. Перед side
 effect він виконує `INSERT ... ON CONFLICT DO NOTHING` у `processed_messages`.
 Inbox marker та activity-feed insert знаходяться в одній notifications DB
 transaction. Ack відправляється лише після commit; duplicate `eventId`, у тому
-числі після restart process, не повторює side effect.
+числі після restart process, не повторює activity item або socket fan-out.
+Malformed envelopes потрапляють у dead-letter queue, а transient handler
+failure requeue-ить message. Після broker disconnect consumer використовує
+bounded exponential reconnect і повторно оголошує exchange, queue та bindings.
+
+### Activity feed та real-time delivery
+
+`GET /activity` вимагає bearer JWT і завжди бере `userId` з authenticated
+principal. Endpoint підтримує `limit` (1–100), opaque cursor pagination та
+optional exact `eventType` filter. Composite DB index підтримує owner/type/time
+query; notifications DB не містить balance чи transfer source-of-truth tables.
+
+Socket.IO namespace `/activity` також вимагає access JWT: browser може передати
+його через `auth.token`, bearer header або існуючу httpOnly `accessToken` cookie.
+Server сам додає socket лише до room `user:<JWT sub>`; client не може вибрати
+іншого user/channel. Після durable DB commit новий item надсилається як
+`activity` тільки цьому room.
+
+WebSocket є лише latency optimization. Після reconnect клієнт повторно читає
+authoritative transfer status у payments-service, wallet balance у
+ledger-service та durable feed через `/api/activity` (BFF proxy до
+notifications-service). Тому crash у вузькому проміжку після DB commit і до
+socket emit може пропустити push, але не activity record і не authoritative
+financial state.
 
 ## Запуск
 
@@ -209,6 +234,8 @@ docker-compose up --build
 - ledger-service: http://localhost:3001
 - payments-service: http://localhost:3002
 - notifications-service: http://localhost:3003
+- notifications Socket.IO namespace: `http://localhost:3003/activity`
+- authenticated recent activity: `GET http://localhost:3003/activity`
 - frontend: http://localhost:3000
 
 Для локальної розробки без Docker: скопіюйте `.env.example` → `.env` у

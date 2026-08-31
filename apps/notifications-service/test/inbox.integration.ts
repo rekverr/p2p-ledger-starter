@@ -34,7 +34,9 @@ describe('notifications durable inbox', () => {
       dropSchema: true,
     });
     await dataSource.initialize();
-    activities = new ActivityFeedService();
+    activities = new ActivityFeedService(
+      dataSource.getRepository(ActivityFeedItem),
+    );
   });
 
   afterAll(async () => {
@@ -136,6 +138,40 @@ describe('notifications durable inbox', () => {
     ).resolves.toMatchObject({ userId: senderUserId });
   });
 
+  it('returns an owner-scoped, filtered and cursor-paginated activity feed', async () => {
+    const userId = randomUUID();
+    const otherUserId = randomUUID();
+    const feed = dataSource.getRepository(ActivityFeedItem);
+    await feed.insert([
+      item(userId, 'payments.transfer.Created', '2026-01-01T00:00:01.000Z'),
+      item(userId, 'payments.transfer.Completed', '2026-01-01T00:00:02.000Z'),
+      item(userId, 'ledger.wallet.MoneyDeposited', '2026-01-01T00:00:03.000Z'),
+      item(otherUserId, 'payments.transfer.Completed', '2026-01-01T00:00:04.000Z'),
+    ]);
+
+    const first = await activities.listForUser(userId, { limit: 2 });
+    expect(first.items.map(({ eventType }) => eventType)).toEqual([
+      'ledger.wallet.MoneyDeposited',
+      'payments.transfer.Completed',
+    ]);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = await activities.listForUser(userId, {
+      limit: 2,
+      cursor: first.nextCursor ?? undefined,
+    });
+    expect(second.items.map(({ eventType }) => eventType)).toEqual([
+      'payments.transfer.Created',
+    ]);
+    await expect(
+      activities.listForUser(userId, {
+        limit: 10,
+        eventType: 'payments.transfer.Completed',
+      }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ userId, eventType: 'payments.transfer.Completed' })],
+    });
+  });
+
   it('contains no ledger or payments persistence tables', async () => {
     const tables = (await dataSource.query(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`,
@@ -146,4 +182,16 @@ describe('notifications durable inbox', () => {
       'processed_messages',
     ]);
   });
+
+  function item(userId: string, eventType: string, createdAt: string) {
+    const eventId = randomUUID();
+    return {
+      eventId,
+      userId,
+      eventType,
+      aggregateId: randomUUID(),
+      payload: { eventId, eventType },
+      createdAt: new Date(createdAt),
+    };
+  }
 });

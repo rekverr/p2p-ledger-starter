@@ -8,6 +8,12 @@ import {
 
 @Entity('activity_feed')
 @Index('IDX_activity_feed_user_created', ['userId', 'createdAt'])
+@Index('IDX_activity_feed_user_type_created', [
+  'userId',
+  'eventType',
+  'createdAt',
+  'id',
+])
 export class ActivityFeedItem {
   @PrimaryGeneratedColumn('uuid')
   id: string;

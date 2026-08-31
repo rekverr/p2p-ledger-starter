@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { HealthController } from './health.controller';
 import { getNotificationsDatabaseOptions } from './database/notifications-database.options';
 import { MessagingModule } from './messaging/messaging.module';
+import { ActivityModule } from './activity/activity.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { MessagingModule } from './messaging/messaging.module';
       useFactory: getNotificationsDatabaseOptions,
     }),
     MessagingModule,
+    ActivityModule,
   ],
   controllers: [HealthController],
 })
