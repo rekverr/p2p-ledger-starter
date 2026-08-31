@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p2p-ledger.local/contracts/v1/payments-split-bill-share-overdue.schema.json",
+  "title": "Payments Split Bill Share Overdue v1",
+  "allOf": [
+    { "$ref": "./envelope.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "eventType": { "const": "payments.split-bill.ShareOverdue" },
+        "schemaVersion": { "const": 1 },
+        "producer": { "const": "payments-service" },
+        "aggregate": {
+          "type": "object",
+          "properties": { "type": { "const": "SplitBillShare" } }
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ownerId",
+            "splitBillId",
+            "shareId",
+            "amountMinor",
+            "currency",
+            "deadline"
+          ],
+          "properties": {
+            "ownerId": { "type": "string", "format": "uuid" },
+            "splitBillId": { "type": "string", "format": "uuid" },
+            "shareId": { "type": "string", "format": "uuid" },
+            "amountMinor": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+            "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+            "deadline": { "type": "string", "format": "date-time" }
+          }
+        }
+      }
+    }
+  ]
+}

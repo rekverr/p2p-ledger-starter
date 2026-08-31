@@ -5,14 +5,18 @@ import {
   Entity,
   Index,
   PrimaryColumn,
+  JoinColumn,
+  OneToOne,
   Unique,
   UpdateDateColumn,
   VersionColumn,
 } from 'typeorm';
 import { TransferStatus } from '../domain/transfer-status';
+import { SplitBillShare } from '../../split-bills/entities/split-bill-share.entity';
 
 @Entity('transfers')
 @Unique('UQ_transfers_sender_idempotency', ['senderUserId', 'idempotencyKey'])
+@Unique('UQ_transfers_split_bill_share', ['splitBillShareId'])
 @Index('IDX_transfers_sender_created', ['senderUserId', 'createdAt'])
 @Index('IDX_transfers_status_retry', ['status', 'nextRetryAt'])
 @Index('IDX_transfers_recovery', ['nextRetryAt', 'leaseUntil'], {
@@ -39,6 +43,19 @@ export class Transfer {
 
   @Column('uuid', { name: 'receiver_wallet_id', nullable: true })
   receiverWalletId: string | null;
+
+  @Column('uuid', { name: 'split_bill_share_id', nullable: true })
+  splitBillShareId?: string | null;
+
+  @OneToOne(() => SplitBillShare, (share) => share.transfer, {
+    nullable: true,
+    onDelete: 'RESTRICT',
+  })
+  @JoinColumn({
+    name: 'split_bill_share_id',
+    foreignKeyConstraintName: 'FK_transfers_split_bill_share',
+  })
+  splitBillShare?: SplitBillShare | null;
 
   @Column('bigint', { name: 'amount_minor' })
   amountMinor: string;

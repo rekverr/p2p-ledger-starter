@@ -10,6 +10,10 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager } from 'typeorm';
 import { PaymentOutboxMessage } from '../database/entities/outbox-message.entity';
 import { Transfer } from '../transfers/entities/transfer.entity';
+import { SplitBill } from '../split-bills/entities/split-bill.entity';
+import { SplitBillShare } from '../split-bills/entities/split-bill-share.entity';
+import { TransferStatus } from '../transfers/domain/transfer-status';
+import { deriveSplitBillStatus } from '../split-bills/domain/split-bill-status';
 import { PaymentIntegrationEvent } from './integration-event';
 import { MESSAGE_PUBLISHER, MessagePublisher } from './message-publisher';
 
@@ -62,6 +66,142 @@ export class PaymentsOutboxService
     await manager.getRepository(PaymentOutboxMessage).insert({
       eventId: event.eventId,
       routingKey: 'payments.transfer.completed.v1',
+      event,
+      attempts: 0,
+      availableAt: occurredAt,
+      lockedUntil: null,
+      lockId: null,
+      publishedAt: null,
+      lastError: null,
+    });
+  }
+
+  async enqueueSplitSharePaid(
+    transfer: Transfer,
+    manager: EntityManager,
+  ): Promise<void> {
+    if (!transfer.splitBillShareId) return;
+    const share = await manager.getRepository(SplitBillShare).findOne({
+      where: { id: transfer.splitBillShareId },
+      relations: { bill: true },
+    });
+    if (!share) throw new Error('Completed split payment is missing its share');
+    const counts = (await manager.query(
+      `SELECT COUNT(*)::integer AS total,
+              COUNT(*) FILTER (WHERE t.status = $2)::integer AS paid
+       FROM split_bill_shares s
+       LEFT JOIN transfers t ON t.split_bill_share_id = s.id
+       WHERE s.bill_id = $1`,
+      [share.billId, TransferStatus.Completed],
+    )) as Array<{ total: number; paid: number }>;
+    const total = Number(counts[0]?.total ?? 0);
+    const paid = Number(counts[0]?.paid ?? 0);
+    const status = deriveSplitBillStatus(paid, total);
+    const commonPayload = {
+      splitBillId: share.billId,
+      shareId: share.id,
+      transferId: transfer.id,
+      participantUserId: share.participantUserId,
+      amountMinor: share.amountMinor,
+      currency: share.bill.currency,
+      billStatus: status,
+    };
+    await this.enqueue(
+      manager,
+      'payments.split-bill.SharePaid',
+      'payments.split-bill.share-paid.v1',
+      'SplitBillShare',
+      share.id,
+      transfer.id,
+      { ...commonPayload, ownerId: share.participantUserId },
+    );
+    if (share.bill.creatorUserId !== share.participantUserId) {
+      await this.enqueue(
+        manager,
+        'payments.split-bill.StatusChanged',
+        'payments.split-bill.status-changed.v1',
+        'SplitBill',
+        share.billId,
+        transfer.id,
+        { ...commonPayload, ownerId: share.bill.creatorUserId },
+      );
+    }
+  }
+
+  async enqueueSplitBillCreated(
+    manager: EntityManager,
+    bill: SplitBill,
+    share: SplitBillShare,
+  ): Promise<void> {
+    await this.enqueue(
+      manager,
+      'payments.split-bill.Created',
+      'payments.split-bill.created.v1',
+      'SplitBill',
+      bill.id,
+      bill.id,
+      {
+        ownerId: share.participantUserId,
+        splitBillId: bill.id,
+        shareId: share.id,
+        creatorUserId: bill.creatorUserId,
+        amountMinor: share.amountMinor,
+        currency: bill.currency,
+        deadline: bill.deadline?.toISOString() ?? null,
+      },
+    );
+  }
+
+  async enqueueOverdueReminder(
+    manager: EntityManager,
+    eventId: string,
+    bill: SplitBill,
+    share: SplitBillShare,
+  ): Promise<void> {
+    await this.enqueue(
+      manager,
+      'payments.split-bill.ShareOverdue',
+      'payments.split-bill.share-overdue.v1',
+      'SplitBillShare',
+      share.id,
+      bill.id,
+      {
+        ownerId: share.participantUserId,
+        splitBillId: bill.id,
+        shareId: share.id,
+        amountMinor: share.amountMinor,
+        currency: bill.currency,
+        deadline: bill.deadline?.toISOString() ?? null,
+      },
+      eventId,
+    );
+  }
+
+  private async enqueue(
+    manager: EntityManager,
+    eventType: string,
+    routingKey: string,
+    aggregateType: PaymentIntegrationEvent['aggregate']['type'],
+    aggregateId: string,
+    correlationId: string,
+    payload: Record<string, unknown>,
+    eventId: string = randomUUID(),
+  ): Promise<void> {
+    const occurredAt = new Date();
+    const event: PaymentIntegrationEvent = {
+      eventId,
+      eventType,
+      schemaVersion: 1,
+      occurredAt: occurredAt.toISOString(),
+      producer: 'payments-service',
+      correlationId,
+      traceId: null,
+      aggregate: { type: aggregateType, id: aggregateId, version: 1 },
+      payload,
+    };
+    await manager.getRepository(PaymentOutboxMessage).insert({
+      eventId,
+      routingKey,
       event,
       attempts: 0,
       availableAt: occurredAt,

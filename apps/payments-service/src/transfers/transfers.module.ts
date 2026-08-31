@@ -21,5 +21,6 @@ import { TransfersService } from './transfers.service';
     LedgerHttpClient,
     { provide: LEDGER_GATEWAY, useExisting: LedgerHttpClient },
   ],
+  exports: [TransfersService, TransferSagaService],
 })
 export class TransfersModule {}

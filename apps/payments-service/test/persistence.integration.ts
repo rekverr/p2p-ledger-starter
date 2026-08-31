@@ -44,12 +44,18 @@ describe('payments-service persistence boundary', () => {
       'integration_outbox',
       'migrations',
       'processed_messages',
+      'split_bill_reminders',
+      'split_bill_shares',
+      'split_bills',
       'transfers',
     ]);
     expect(paymentsEntities.map(({ name }) => name)).toEqual([
       'PaymentOutboxMessage',
       'PaymentProcessedMessage',
       'Transfer',
+      'SplitBill',
+      'SplitBillShare',
+      'SplitBillReminder',
     ]);
   });
 

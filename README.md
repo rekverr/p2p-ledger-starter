@@ -10,7 +10,7 @@
   journal, CQRS balance/hold projection та admin reconciliation API.
 - `apps/payments-service` — durable transfer creation, authenticated sender
   context, PostgreSQL-backed `Idempotency-Key`, orchestrated saga, recovery
-  worker та transactional completion outbox.
+  worker, split bills та transactional integration outbox.
 - `apps/notifications-service` — durable RabbitMQ consumer/inbox, persisted
   owner-scoped activity feed та JWT-authenticated WebSocket fan-out.
 - `apps/frontend` — сторінки логіну, реєстрації та список гаманців (Next.js
@@ -18,9 +18,9 @@
 
 ## Що ще НЕ реалізовано
 
-- FX, fraud/limit provider та split-payment orchestration ще не реалізовані;
+- FX та fraud/limit provider ще не реалізовані;
   same-currency transfer rules перевіряються ledger-service.
-- Форма переказу, split-рахунки, admin-екран на фронтенді.
+- Форма переказу, split-bill UI та admin-екран на фронтенді.
 
 ## Multi-service infrastructure
 
@@ -75,8 +75,9 @@ crash очікуваний і нейтралізується durable consumer in
 
 - `ledger-db` / database `ledger`: users, wallets, immutable event store,
   projections та `integration_outbox`;
-- `payments-db` / database `payments`: durable `transfers`, окремі migration
-  history, `integration_outbox` і `processed_messages` foundation;
+- `payments-db` / database `payments`: durable transfers, split bills/shares,
+  reminders, окремі migration history, `integration_outbox` і
+  `processed_messages` foundation;
 - `notifications-db` / database `notifications`: `processed_messages` та
   `activity_feed`.
 
@@ -109,6 +110,45 @@ Pending -> Failed
 
 `Completed` і `Failed` terminal. State update використовує optimistic entity
 version та умову на попередні status/version.
+
+### Split bills
+
+`payments-service` зберігає `split_bills` та allocation rows у
+`split_bill_shares`. Суми API передаються canonical decimal strings формату
+`0.00`, одразу конвертуються у integer minor units (`bigint`) і надалі не
+обчислюються через floating point. Custom split приймається лише коли сума всіх
+shares точно дорівнює total. Equal split детерміновано розподіляє cent remainder
+за persisted participant `position` (наприклад `10.00 / 3` → `3.34`, `3.33`,
+`3.33`).
+
+API:
+
+- `POST /split-bills` — створення equal/custom bill; creator identity береться
+  з JWT, а receiver reference — з authenticated email, не request body;
+- `GET /split-bills/:id` — доступ creator або participant;
+- `POST /split-bills/:billId/shares/:shareId/pay` — participant передає свій
+  source wallet та обов'язковий `Idempotency-Key`.
+
+Share payment створює звичайний `transfers` row, після чого запускається той
+самий hold/settle/compensation saga та ledger API. Unique constraint
+`transfers(split_bill_share_id)` гарантує один logical payment на share навіть
+при concurrent requests. Amount, currency і receiver wallet беруться з bill,
+не з pay request. Share вважається paid виключно коли пов'язаний transfer має
+terminal `Completed`; `Failed` не змінює financial/aggregate state.
+
+Bill status не є другим mutable source of truth, а обчислюється зі shares:
+
+```text
+0 completed transfers -> Pending
+some completed transfers -> PartiallyPaid
+all completed transfers -> Settled
+```
+
+Optional `deadline` обробляє recovery-safe reminder worker. Його interval,
+batch size та enable flag задаються `SPLIT_BILL_REMINDER_*`. Для overdue share
+без active/successful payment worker атомарно записує unique durable reminder і
+`payments.split-bill.ShareOverdue` у payments outbox. Notifications consumer
+deduplicate-ить event за `eventId` та створює activity лише participant user.
 
 ### ADR: orchestrated transfer saga
 
@@ -459,9 +499,9 @@ constraints до існуючих projections.
 
 CI використовує Node.js 20 та виконує `npm ci`, lint і build для всіх чотирьох
 apps. Ledger job додатково запускає unit tests та PostgreSQL concurrency
-integration tests. Payments job запускає unit, persistence та transfer
-idempotency/concurrency integration tests; notifications job запускає unit і
-persistence integration tests.
+integration tests. Payments job запускає unit, persistence, transfer
+idempotency/concurrency, saga і split-bill integration tests; notifications job
+запускає unit і persistence integration tests.
 
 Локальний набір команд для кожного app:
 
@@ -489,6 +529,7 @@ npm test -- --runInBand --no-watchman
 npm run test:integration:persistence
 npm run test:integration:transfers
 npm run test:integration:saga
+npm run test:integration:split-bills
 
 cd ../notifications-service
 npm test -- --runInBand --no-watchman

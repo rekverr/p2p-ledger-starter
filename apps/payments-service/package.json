@@ -13,6 +13,7 @@
     "test:integration:persistence": "jest --runInBand --no-watchman --testPathIgnorePatterns='^$' --runTestsByPath test/persistence.integration.ts",
     "test:integration:transfers": "jest --runInBand --no-watchman --testPathIgnorePatterns='^$' --runTestsByPath test/transfers.integration.ts",
     "test:integration:saga": "jest --runInBand --no-watchman --testPathIgnorePatterns='^$' --runTestsByPath test/transfer-saga.integration.ts",
+    "test:integration:split-bills": "jest --runInBand --no-watchman --testPathIgnorePatterns='^$' --runTestsByPath test/split-bills.integration.ts",
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/database/data-source.ts",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts"
   },

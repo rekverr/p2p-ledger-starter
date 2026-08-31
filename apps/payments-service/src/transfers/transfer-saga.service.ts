@@ -243,6 +243,7 @@ export class TransferSagaService
         },
       );
       await this.outbox.enqueueTransferCompleted(completed, manager);
+      await this.outbox.enqueueSplitSharePaid(completed, manager);
     });
   }
 

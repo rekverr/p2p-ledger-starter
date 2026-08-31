@@ -74,6 +74,7 @@ jobs:
       - run: npm run test:integration:persistence
       - run: npm run test:integration:transfers
       - run: npm run test:integration:saga
+      - run: npm run test:integration:split-bills
 
   notifications-service:
     runs-on: ubuntu-latest

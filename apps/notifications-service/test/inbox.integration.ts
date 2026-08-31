@@ -138,6 +138,41 @@ describe('notifications durable inbox', () => {
     ).resolves.toMatchObject({ userId: senderUserId });
   });
 
+  it('persists an overdue split-share reminder for its intended participant', async () => {
+    const participantUserId = randomUUID();
+    const splitBillId = randomUUID();
+    const shareId = randomUUID();
+    const message: IntegrationEventEnvelope = {
+      ...event(),
+      eventType: 'payments.split-bill.ShareOverdue',
+      producer: 'payments-service',
+      aggregate: { type: 'SplitBillShare', id: shareId, version: 1 },
+      payload: {
+        ownerId: participantUserId,
+        splitBillId,
+        shareId,
+        amountMinor: '1250',
+        currency: 'USD',
+        deadline: '2026-01-01T00:00:00.000Z',
+      },
+    };
+
+    await new InboxService(dataSource).process(
+      'notifications.activity-feed.v1',
+      message,
+      (manager, current) => activities.record(manager, current),
+    );
+
+    await expect(
+      dataSource.getRepository(ActivityFeedItem).findOneByOrFail({
+        eventId: message.eventId,
+      }),
+    ).resolves.toMatchObject({
+      userId: participantUserId,
+      eventType: 'payments.split-bill.ShareOverdue',
+    });
+  });
+
   it('returns an owner-scoped, filtered and cursor-paginated activity feed', async () => {
     const userId = randomUUID();
     const otherUserId = randomUUID();

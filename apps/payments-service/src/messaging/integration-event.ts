@@ -7,16 +7,9 @@ export interface PaymentIntegrationEvent {
   correlationId: string;
   traceId: string | null;
   aggregate: {
-    type: 'Transfer';
+    type: 'Transfer' | 'SplitBill' | 'SplitBillShare';
     id: string;
     version: number;
   };
-  payload: {
-    senderUserId: string;
-    senderWalletId: string;
-    receiverWalletId: string;
-    amountMinor: string;
-    currency: string;
-    status: 'Completed';
-  };
+  payload: Record<string, unknown>;
 }

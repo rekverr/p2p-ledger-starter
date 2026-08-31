@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TransfersModule } from './transfers/transfers.module';
 import { getPaymentsDatabaseOptions } from './database/payments-database.options';
+import { SplitBillsModule } from './split-bills/split-bills.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { getPaymentsDatabaseOptions } from './database/payments-database.options
       useFactory: getPaymentsDatabaseOptions,
     }),
     TransfersModule,
+    SplitBillsModule,
   ],
 })
 export class AppModule {}

@@ -24,6 +24,7 @@ export interface TransferView {
   senderWalletId: string;
   receiverReference: string;
   receiverWalletId: string | null;
+  splitBillShareId: string | null;
   amount: string;
   currency: string;
   status: TransferStatus;
@@ -42,6 +43,7 @@ interface CanonicalTransferRequest {
   receiverReference: string;
   amountMinor: string;
   currency: string;
+  splitBillShareId: string | null;
 }
 
 @Injectable()
@@ -58,8 +60,45 @@ export class TransfersService {
     senderUserId: string,
   ): Promise<TransferView> {
     const idempotencyKey = this.normalizeIdempotencyKey(idempotencyKeyHeader);
-    const canonical = this.canonicalRequest(dto, senderUserId);
+    const canonical = this.canonicalRequest(dto, senderUserId, null);
+    return this.createCanonical(canonical, idempotencyKey);
+  }
+
+  async createSplitSharePayment(
+    input: {
+      shareId: string;
+      participantUserId: string;
+      fromWalletId: string;
+      receiverReference: string;
+      amountMinor: string;
+      currency: string;
+    },
+    idempotencyKeyHeader: string | undefined,
+  ): Promise<TransferView> {
+    const idempotencyKey = this.normalizeIdempotencyKey(idempotencyKeyHeader);
+    const canonical: CanonicalTransferRequest = {
+      senderUserId: input.participantUserId,
+      senderWalletId: input.fromWalletId.toLowerCase(),
+      receiverReference: input.receiverReference.trim().toLowerCase(),
+      amountMinor: input.amountMinor,
+      currency: input.currency,
+      splitBillShareId: input.shareId,
+    };
+    return this.createCanonical(canonical, idempotencyKey);
+  }
+
+  private async createCanonical(
+    canonical: CanonicalTransferRequest,
+    idempotencyKey: string,
+  ): Promise<TransferView> {
+    const { senderUserId, splitBillShareId } = canonical;
     const fingerprint = this.fingerprint(canonical);
+    if (splitBillShareId) {
+      const shareTransfer = await this.transfers.findOne({
+        where: { splitBillShareId },
+      });
+      if (shareTransfer) return this.resolveExisting(shareTransfer, fingerprint);
+    }
     const existing = await this.transfers.findOne({
       where: { senderUserId, idempotencyKey },
     });
@@ -89,10 +128,12 @@ export class TransfersService {
       });
       return this.toView(await this.transfers.findOneByOrFail({ id: transfer.id }));
     } catch (error: unknown) {
-      if (!this.isIdempotencyUniqueViolation(error)) throw error;
-      const winner = await this.transfers.findOne({
-        where: { senderUserId, idempotencyKey },
-      });
+      if (!this.isCreationUniqueViolation(error)) throw error;
+      const winner = splitBillShareId
+        ? await this.transfers.findOne({ where: { splitBillShareId } })
+        : await this.transfers.findOne({
+            where: { senderUserId, idempotencyKey },
+          });
       if (!winner) {
         throw new Error('Idempotency winner was not visible after unique conflict');
       }
@@ -159,6 +200,7 @@ export class TransfersService {
   private canonicalRequest(
     dto: CreateTransferDto,
     senderUserId: string,
+    splitBillShareId: string | null,
   ): CanonicalTransferRequest {
     return {
       senderUserId,
@@ -166,6 +208,7 @@ export class TransfersService {
       receiverReference: dto.toWalletIdentifier.trim(),
       amountMinor: this.amountToMinorUnits(dto.amount),
       currency: dto.currency.trim().toUpperCase(),
+      splitBillShareId,
     };
   }
 
@@ -194,6 +237,7 @@ export class TransfersService {
       senderWalletId: transfer.senderWalletId,
       receiverReference: transfer.receiverReference,
       receiverWalletId: transfer.receiverWalletId,
+      splitBillShareId: transfer.splitBillShareId ?? null,
       amount: this.formatMinorUnits(BigInt(transfer.amountMinor)),
       currency: transfer.currency,
       status: transfer.status,
@@ -213,7 +257,7 @@ export class TransfersService {
       .padStart(2, '0')}`;
   }
 
-  private isIdempotencyUniqueViolation(error: unknown): boolean {
+  private isCreationUniqueViolation(error: unknown): boolean {
     if (!(error instanceof QueryFailedError)) return false;
     const driverError = error.driverError as {
       code?: unknown;
@@ -221,7 +265,8 @@ export class TransfersService {
     };
     return (
       driverError.code === '23505' &&
-      driverError.constraint === IDEMPOTENCY_CONSTRAINT
+      (driverError.constraint === IDEMPOTENCY_CONSTRAINT ||
+        driverError.constraint === 'UQ_transfers_split_bill_share')
     );
   }
 }
