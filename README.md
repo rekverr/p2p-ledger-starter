@@ -13,20 +13,24 @@
   worker, split bills та transactional integration outbox.
 - `apps/notifications-service` — durable RabbitMQ consumer/inbox, persisted
   owner-scoped activity feed та JWT-authenticated WebSocket fan-out.
-- `apps/frontend` — сторінки логіну, реєстрації та список гаманців (Next.js
-  App Router, Server Component + API-роут-проксі для авторизації).
+- `apps/gateway-service` — stateless NestJS BFF, який агрегує frontend reads,
+  переносить JWT/idempotency context та ніколи не читає service databases.
+- `apps/frontend` — Next.js App Router UI для auth, wallets, transfers,
+  split bills, activity feed та admin inspection з reconnect/resync behavior.
 
 ## Що ще НЕ реалізовано
 
 - FX та fraud/limit provider ще не реалізовані;
   same-currency transfer rules перевіряються ledger-service.
-- Форма переказу, split-bill UI та admin-екран на фронтенді.
+- Trace/timing backend для admin UI ще не реалізований; event log і
+  reconciliation доступні через захищений admin BFF.
 
 ## Multi-service infrastructure
 
 ```mermaid
 flowchart LR
   FE[Next.js frontend]
+  BFF[NestJS gateway/BFF]
   L[ledger-service]
   P[payments-service]
   N[notifications-service]
@@ -35,8 +39,10 @@ flowchart LR
   NDB[(notifications PostgreSQL)]
   RMQ[(RabbitMQ topic exchange)]
 
-  FE -->|HTTP| L
-  FE -->|HTTP| P
+  FE -->|same-origin HTTP; httpOnly cookie| BFF
+  BFF -->|Bearer JWT; read/command APIs| L
+  BFF -->|Bearer JWT + Idempotency-Key| P
+  BFF -->|Bearer JWT; activity query| N
   P -->|authenticated idempotent transfer commands| L
   L -->|local transaction: event store + projection + outbox| LDB
   P -->|local transaction: saga state + completion outbox| PDB
@@ -53,6 +59,56 @@ flowchart LR
 connection settings; cross-service state надалі передається лише versioned
 HTTP contracts чи integration events. XA/distributed transactions не
 використовуються.
+
+### ADR: NestJS BFF замість GraphQL
+
+У starter repository не було GraphQL schema, resolver layer або GraphQL client.
+Тому додавання GraphQL лише для frontend aggregation створило б другий API
+contract і новий runtime stack без доменної користі. Обрано тонкий NestJS BFF,
+бо backend services уже використовують NestJS/REST і versioned DTO contracts.
+
+`gateway-service` не має database або ORM entities. Він:
+
+- перевіряє access JWT і forward-ить той самий bearer context до ledger,
+  payments та notifications;
+- агрегує `GET /bff/dashboard` з wallets, recent activity і split bills;
+- allow-list-ить downstream service та query parameters, має bounded upstream
+  timeout і зберігає HTTP status/error semantics;
+- переносить `Idempotency-Key` без генерації або зміни business identity;
+- повторно захищає admin routes role guard-ом, після чого ledger також виконує
+  власну server-side admin authorization.
+
+Domain validation, ownership, saga transitions, ledger invariants та
+idempotency залишаються у services-власниках. BFF не читає їх DB і не дублює
+business logic.
+
+### Frontend rendering, auth і reconnect
+
+Login/register залишились App Router pages. Їх same-origin route handlers
+викликають BFF auth endpoints і кладуть access/refresh token лише в `httpOnly`,
+`SameSite=Lax` cookies. Token не читається browser JavaScript. Server Components
+та `/api/bff/[...path]` читають cookie на Next.js server і forward-ять
+`Authorization: Bearer ...`; це закриває starter bug, де protected `/wallets`
+ніколи не отримував token.
+
+- `/wallets`, `/split-bills`, `/split-bills/[id]`, `/activity` та `/admin`
+  використовують Server Components для initial authoritative reads;
+- create-split є non-live mutation через Server Action; share payment лишається
+  explicit client mutation через stable idempotency key;
+- transfer form, live wallet/activity state, share payment і admin inspector є
+  Client Components, бо мають mutation/live state;
+- loading boundaries, empty/error states та global recoverable error boundary
+  покривають очікування й upstream failures;
+- Socket.IO client показує `connecting`, `reconnecting`, `offline` і
+  `connected`. Push є лише сигналом: після activity або reconnect UI повторно
+  читає authoritative BFF state.
+
+Transfer form створює один `Idempotency-Key` на logical submission. Network
+retry повторно використовує ключ; in-flight duplicate click ігнорується лише як
+UX optimization, а server-side unique constraint залишається гарантією. Кнопка
+`Новий переказ` явно починає нову logical operation і створює новий key. Share
+payment застосовує таку саму модель та завжди проходить через existing payments
+saga/ledger path.
 
 ### ADR: RabbitMQ як event broker
 
@@ -277,6 +333,7 @@ docker-compose up --build
 - notifications Socket.IO namespace: `http://localhost:3003/activity`
 - authenticated recent activity: `GET http://localhost:3003/activity`
 - frontend: http://localhost:3000
+- frontend-facing BFF: http://localhost:3004
 
 Для локальної розробки без Docker: скопіюйте `.env.example` → `.env` у
 кожному сервісі, підніміть Postgres окремо, `npm ci && npm run start:dev`
@@ -289,6 +346,8 @@ docker-compose up --build
 
 ```bash
 cd apps/ledger-service && npm test
+cd ../gateway-service && npm test && npm run lint && npm run build
+cd ../frontend && npm test && npm run lint && npm run build
 ```
 
 Не всі тести в репозиторії однаково надійні — це навмисно, дивись ТЗ.

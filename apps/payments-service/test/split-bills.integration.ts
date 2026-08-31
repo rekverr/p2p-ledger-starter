@@ -185,6 +185,17 @@ describe('split bills through the normal transfer saga', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('lists only bills visible to the creator or participant', async () => {
+    const visible = await createEqual('10.00', [participantA]);
+    await createEqual('5.00', [participantB]);
+
+    await expect(service.list(participantA)).resolves.toMatchObject([
+      { id: visible.id },
+    ]);
+    await expect(service.list(randomUUID())).resolves.toEqual([]);
+    await expect(service.list(creatorUserId)).resolves.toHaveLength(2);
+  });
+
   it('derives Pending, PartiallyPaid and Settled from completed transfers', async () => {
     const bill = await createEqual('30.00', [
       participantA,

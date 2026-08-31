@@ -113,16 +113,24 @@ services:
       - default
       - notifications-data
 
+  gateway-service:
+    build: ./apps/gateway-service
+    env_file: ./apps/gateway-service/.env.example
+    depends_on:
+      - ledger-service
+      - payments-service
+      - notifications-service
+    ports:
+      - '3004:3004'
+
   frontend:
     build: ./apps/frontend
     env_file: ./apps/frontend/.env.example
     environment:
-      LEDGER_SERVICE_URL: http://ledger-service:3001
-      PAYMENTS_SERVICE_URL: http://payments-service:3002
-      NOTIFICATIONS_SERVICE_URL: http://notifications-service:3003
+      GATEWAY_SERVICE_URL: http://gateway-service:3004
+      NEXT_PUBLIC_NOTIFICATIONS_WS_URL: http://localhost:3003
     depends_on:
-      - ledger-service
-      - payments-service
+      - gateway-service
     ports:
       - '3000:3000'
 

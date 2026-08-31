@@ -1,18 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ledgerFetch } from '@/lib/api';
+import { gatewayAuthFetch } from '@/lib/api';
 
-// Проксі до ledger-service, щоб зберігати токени в httpOnly cookie,
-// а не в localStorage на клієнті.
 export async function POST(req: NextRequest) {
   const body = await req.json();
   try {
-    const tokens = await ledgerFetch('/auth/login', {
+    const tokens = await gatewayAuthFetch<{
+      accessToken: string;
+      refreshToken: string;
+    }>('/login', {
       method: 'POST',
       body: JSON.stringify(body),
     });
     const res = NextResponse.json({ ok: true });
-    res.cookies.set('accessToken', tokens.accessToken, { httpOnly: true, path: '/' });
-    res.cookies.set('refreshToken', tokens.refreshToken, { httpOnly: true, path: '/' });
+    const cookie = {
+      httpOnly: true,
+      sameSite: 'lax' as const,
+      secure: process.env.COOKIE_SECURE === 'true',
+      path: '/',
+    };
+    res.cookies.set('accessToken', tokens.accessToken, cookie);
+    res.cookies.set('refreshToken', tokens.refreshToken, cookie);
     return res;
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 401 });

@@ -8,10 +8,12 @@ export default function RegisterPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setLoading(true);
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
@@ -20,8 +22,11 @@ export default function RegisterPage() {
       });
       if (!res.ok) throw new Error('Не вдалося зареєструватись');
       router.push('/wallets');
+      router.refresh();
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -46,7 +51,9 @@ export default function RegisterPage() {
         />
         <br />
         {error && <p style={{ color: 'crimson' }}>{error}</p>}
-        <button type="submit">Зареєструватись</button>
+        <button type="submit" disabled={loading}>
+          {loading ? 'Реєстрація…' : 'Зареєструватись'}
+        </button>
       </form>
     </main>
   );

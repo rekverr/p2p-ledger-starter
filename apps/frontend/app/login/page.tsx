@@ -8,10 +8,12 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setLoading(true);
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -20,8 +22,11 @@ export default function LoginPage() {
       });
       if (!res.ok) throw new Error('Невірний email або пароль');
       router.push('/wallets');
+      router.refresh();
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -46,7 +51,7 @@ export default function LoginPage() {
         />
         <br />
         {error && <p style={{ color: 'crimson' }}>{error}</p>}
-        <button type="submit">Увійти</button>
+        <button type="submit" disabled={loading}>{loading ? 'Вхід…' : 'Увійти'}</button>
       </form>
       <p>
         Немає акаунта? <a href="/register">Зареєструватись</a>

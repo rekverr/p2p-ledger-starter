@@ -112,6 +112,21 @@ export class SplitBillsService {
     return this.toView(bill);
   }
 
+  async list(userId: string): Promise<SplitBillView[]> {
+    const rows = (await this.dataSource.query(
+      `SELECT DISTINCT b.id
+       FROM split_bills b
+       LEFT JOIN split_bill_shares s ON s.bill_id = b.id
+       WHERE b.creator_user_id = $1 OR s.participant_user_id = $1
+       ORDER BY b.id`,
+      [userId],
+    )) as Array<{ id: string }>;
+    const bills = await Promise.all(rows.map(({ id }) => this.get(id, userId)));
+    return bills.sort(
+      (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),
+    );
+  }
+
   async payShare(
     billId: string,
     shareId: string,

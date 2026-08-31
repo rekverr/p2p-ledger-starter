@@ -39,6 +39,11 @@ export class SplitBillsController {
     return this.splitBills.get(id, request.user.userId);
   }
 
+  @Get()
+  list(@Request() request: AuthenticatedRequest) {
+    return this.splitBills.list(request.user.userId);
+  }
+
   @Post(':billId/shares/:shareId/pay')
   pay(
     @Param('billId', new ParseUUIDPipe()) billId: string,
