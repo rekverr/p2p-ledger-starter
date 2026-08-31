@@ -35,7 +35,7 @@ describe('payments-service persistence boundary', () => {
     if (dataSource?.isInitialized) await dataSource.destroy();
   });
 
-  it('owns only payments messaging persistence and no foreign service tables', async () => {
+  it('owns only payments persistence and no foreign service tables', async () => {
     const tables = (await dataSource.query(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`,
     )) as Array<{ tablename: string }>;
@@ -44,10 +44,12 @@ describe('payments-service persistence boundary', () => {
       'integration_outbox',
       'migrations',
       'processed_messages',
+      'transfers',
     ]);
     expect(paymentsEntities.map(({ name }) => name)).toEqual([
       'PaymentOutboxMessage',
       'PaymentProcessedMessage',
+      'Transfer',
     ]);
   });
 

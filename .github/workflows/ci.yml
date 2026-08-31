@@ -72,6 +72,7 @@ jobs:
       - run: npm run build
       - run: npm test -- --runInBand --no-watchman
       - run: npm run test:integration:persistence
+      - run: npm run test:integration:transfers
 
   notifications-service:
     runs-on: ubuntu-latest

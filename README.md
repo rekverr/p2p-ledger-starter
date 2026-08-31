@@ -8,13 +8,15 @@
 
 - `apps/ledger-service` — автентифікація, event-sourced wallets, double-entry
   journal, CQRS balance/hold projection та admin reconciliation API.
+- `apps/payments-service` — durable transfer creation, authenticated sender
+  context, PostgreSQL-backed `Idempotency-Key` і foundation state machine.
 - `apps/frontend` — сторінки логіну, реєстрації та список гаманців (Next.js
   App Router, Server Component + API-роут-проксі для авторизації).
 
 ## Що ще НЕ реалізовано
 
-- `apps/payments-service` — лише каркас контролера/DTO, бізнес-логіки саги
-  переказу немає (`NotImplementedException`).
+- `apps/payments-service` — кроки transfer saga, ledger calls, compensation та
+  lifecycle workers ще не реалізовані.
 - `apps/notifications-service` — має durable RabbitMQ consumer, inbox
   deduplication та persistence activity feed; WebSocket fan-out ще не доданий.
 - Форма переказу, split-рахунки, admin-екран на фронтенді.
@@ -36,7 +38,7 @@ flowchart LR
   FE -->|HTTP| P
   P -.->|future authenticated HTTP commands| L
   L -->|local transaction: event store + projection + outbox| LDB
-  P -->|local transaction only| PDB
+  P -->|local transaction: transfer + idempotency| PDB
   N -->|inbox + activity in one local transaction| NDB
   LDB -->|outbox relay + publisher confirm| RMQ
   RMQ -->|durable queue, manual ack| N
@@ -70,14 +72,41 @@ crash очікуваний і нейтралізується durable consumer in
 
 - `ledger-db` / database `ledger`: users, wallets, immutable event store,
   projections та `integration_outbox`;
-- `payments-db` / database `payments`: окремі migration history,
-  `integration_outbox` і `processed_messages` foundation. Transfer/saga tables
-  з'являться разом із наступним payments slice;
+- `payments-db` / database `payments`: durable `transfers`, окремі migration
+  history, `integration_outbox` і `processed_messages` foundation;
 - `notifications-db` / database `notifications`: `processed_messages` та
   `activity_feed`.
 
 Це окремі PostgreSQL containers і volumes, а не просто різні credentials до
 одного shared database instance.
+
+### Durable transfer creation та idempotency
+
+`POST /transfers` вимагає bearer JWT і непорожній `Idempotency-Key` (до 200
+символів). Sender user береться з JWT principal; client передає лише source
+wallet reference. Request нормалізується до canonical форми
+`senderUserId/fromWalletId/receiver/amountMinor/currency`, а її SHA-256
+зберігається у `request_fingerprint`.
+
+Unique constraint `(sender_user_id, idempotency_key)` є фінальною concurrency
+гарантією. Перший request вставляє `Pending` transfer. Повтор із тим самим hash
+повертає той самий transfer, а reuse key з іншим hash повертає `409 Conflict`.
+У concurrent race лише один INSERT проходить constraint; loser перечитує
+persisted winner і застосовує ту саму hash-перевірку. Тому гарантія переживає
+restart і не залежить від in-memory state.
+
+Transfer status має explicit дозволені переходи:
+
+```text
+Pending -> Validating -> FundsHeld -> Processing -> Completed
+                     \             \-> Compensating -> Failed
+                      \-> Failed
+Pending -> Failed
+```
+
+`Completed` і `Failed` terminal. State update використовує optimistic entity
+version та умову на попередні status/version. Це лише foundation: saga steps
+не запускаються автоматично в цьому slice.
 
 ### Versioned integration event contract
 
@@ -345,8 +374,9 @@ constraints до існуючих projections.
 
 CI використовує Node.js 20 та виконує `npm ci`, lint і build для всіх чотирьох
 apps. Ledger job додатково запускає unit tests та PostgreSQL concurrency
-integration tests. Payments і notifications поки не мають test files, тому CI
-не маскує їх відсутність через `--passWithNoTests`.
+integration tests. Payments job запускає unit, persistence та transfer
+idempotency/concurrency integration tests; notifications job запускає unit і
+persistence integration tests.
 
 Локальний набір команд для кожного app:
 
@@ -372,6 +402,7 @@ npm run test:integration:migration
 cd apps/payments-service
 npm test -- --runInBand --no-watchman
 npm run test:integration:persistence
+npm run test:integration:transfers
 
 cd ../notifications-service
 npm test -- --runInBand --no-watchman
