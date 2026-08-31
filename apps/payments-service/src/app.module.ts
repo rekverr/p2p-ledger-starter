@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { TransfersModule } from './transfers/transfers.module';
 import { getPaymentsDatabaseOptions } from './database/payments-database.options';
 import { SplitBillsModule } from './split-bills/split-bills.module';
+import { ObservabilityModule } from './observability/observability.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { SplitBillsModule } from './split-bills/split-bills.module';
     }),
     TransfersModule,
     SplitBillsModule,
+    ObservabilityModule,
   ],
 })
 export class AppModule {}

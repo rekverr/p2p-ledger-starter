@@ -3,9 +3,11 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   OnApplicationBootstrap,
   OnApplicationShutdown,
 } from '@nestjs/common';
+import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { PaymentsOutboxService } from '../messaging/outbox.service';
@@ -19,6 +21,7 @@ import {
   LedgerCommandError,
   LedgerGateway,
 } from './ledger.gateway';
+import { MetricsService } from '../observability/metrics.service';
 
 const TERMINAL_STATUSES = [TransferStatus.Completed, TransferStatus.Failed];
 
@@ -38,6 +41,7 @@ export class TransferSagaService
     @InjectDataSource() private readonly dataSource: DataSource,
     @Inject(LEDGER_GATEWAY) private readonly ledger: LedgerGateway,
     private readonly outbox: PaymentsOutboxService,
+    @Optional() private readonly metrics?: MetricsService,
   ) {}
 
   async run(transferId: string, now = new Date()): Promise<void> {
@@ -59,8 +63,13 @@ export class TransferSagaService
         }
 
         if (transfer.status === TransferStatus.Validating) {
+          const current = transfer;
           if (!transfer.receiverWalletId) {
-            const validation = await this.ledger.validate(transfer);
+            const validation = await this.measureStep(
+              'validate',
+              current,
+              () => this.ledger.validate(current),
+            );
             transfer = await this.updateClaimed(transfer, leaseOwner, {
               receiverWalletId: validation.receiverWalletId,
               retryCount: 0,
@@ -75,7 +84,10 @@ export class TransferSagaService
               lastAttemptAt: new Date(),
             });
           }
-          await this.ledger.placeHold(transfer);
+          const holding = transfer;
+          await this.measureStep('place_hold', holding, () =>
+            this.ledger.placeHold(holding),
+          );
           transfer = await this.transitionClaimed(
             transfer,
             leaseOwner,
@@ -96,13 +108,20 @@ export class TransferSagaService
         }
 
         if (transfer.status === TransferStatus.Processing) {
-          await this.ledger.settle(transfer);
+          const processing = transfer;
+          await this.measureStep('settle', processing, () =>
+            this.ledger.settle(processing),
+          );
           await this.complete(transfer, leaseOwner);
           return;
         }
 
         if (transfer.status === TransferStatus.Compensating) {
-          const released = await this.ledger.release(transfer);
+          const compensating = transfer;
+          const released = await this.measureStep('compensate_release', compensating, () =>
+            this.ledger.release(compensating),
+          );
+          this.metrics?.compensations.inc({ outcome: released.outcome });
           if (released.outcome === 'already_settled') {
             await this.complete(transfer, leaseOwner);
           } else {
@@ -212,6 +231,14 @@ export class TransferSagaService
     now: Date,
   ): Promise<void> {
     const retryCount = transfer.retryCount + 1;
+    this.metrics?.sagaRetries.inc({ step: this.metricStep(transfer.status) });
+    this.logger.warn({
+      event: 'saga_retry_scheduled',
+      transferId: transfer.id,
+      step: this.metricStep(transfer.status),
+      retryCount,
+      failureCode: failure.code,
+    });
     const base = Number(process.env.SAGA_RETRY_BASE_MS ?? 1000);
     const delay = Math.min(base * 2 ** (retryCount - 1), 60_000);
     await this.updateClaimed(transfer, leaseOwner, {
@@ -245,6 +272,15 @@ export class TransferSagaService
       await this.outbox.enqueueTransferCompleted(completed, manager);
       await this.outbox.enqueueSplitSharePaid(completed, manager);
     });
+    this.metrics?.transferOutcomes.inc({ outcome: 'completed' });
+    this.metrics?.sagaDuration.observe(
+      { outcome: 'completed' },
+      Math.max(0, (Date.now() - transfer.createdAt.getTime()) / 1000),
+    );
+    this.logger.log({
+      event: 'transfer_completed',
+      transferId: transfer.id,
+    });
   }
 
   private async fail(
@@ -265,6 +301,16 @@ export class TransferSagaService
         lastAttemptAt: new Date(),
       },
     );
+    this.metrics?.transferOutcomes.inc({ outcome: 'failed' });
+    this.metrics?.sagaDuration.observe(
+      { outcome: 'failed' },
+      Math.max(0, (Date.now() - transfer.createdAt.getTime()) / 1000),
+    );
+    this.logger.warn({
+      event: 'transfer_failed',
+      transferId: transfer.id,
+      failureCode: failure?.code ?? transfer.failureCode,
+    });
   }
 
   private async transitionClaimed(
@@ -353,5 +399,49 @@ export class TransferSagaService
 
   private errorMessage(error: unknown): string {
     return (error instanceof Error ? error.message : String(error)).slice(0, 2000);
+  }
+
+  private async measureStep<T>(
+    step: string,
+    transfer: Transfer,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const started = process.hrtime.bigint();
+    return trace.getTracer('payments-service').startActiveSpan(
+      `saga.${step}`,
+      { attributes: { 'transfer.id': transfer.id, 'saga.step': step } },
+      async (span) => {
+        let outcome = 'success';
+        try {
+          return await operation();
+        } catch (error: unknown) {
+          outcome = 'error';
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          span.recordException(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+          throw error;
+        } finally {
+          this.metrics?.sagaStepDuration.observe(
+            { step, outcome },
+            Number(process.hrtime.bigint() - started) / 1_000_000_000,
+          );
+          span.end();
+        }
+      },
+    );
+  }
+
+  private metricStep(status: TransferStatus): string {
+    switch (status) {
+      case TransferStatus.Validating:
+        return 'validate_or_hold';
+      case TransferStatus.Processing:
+        return 'settle';
+      case TransferStatus.Compensating:
+        return 'compensate';
+      default:
+        return 'transition';
+    }
   }
 }

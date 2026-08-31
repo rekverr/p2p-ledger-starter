@@ -3,11 +3,12 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   OnApplicationBootstrap,
   OnApplicationShutdown,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { PaymentOutboxMessage } from '../database/entities/outbox-message.entity';
 import { Transfer } from '../transfers/entities/transfer.entity';
 import { SplitBill } from '../split-bills/entities/split-bill.entity';
@@ -16,6 +17,11 @@ import { TransferStatus } from '../transfers/domain/transfer-status';
 import { deriveSplitBillStatus } from '../split-bills/domain/split-bill-status';
 import { PaymentIntegrationEvent } from './integration-event';
 import { MESSAGE_PUBLISHER, MessagePublisher } from './message-publisher';
+import {
+  activeTraceId,
+  captureTraceCarrier,
+} from '../observability/propagation';
+import { MetricsService } from '../observability/metrics.service';
 
 const LOCK_DURATION_MS = 30_000;
 const MAX_BACKOFF_MS = 60_000;
@@ -31,6 +37,7 @@ export class PaymentsOutboxService
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     @Inject(MESSAGE_PUBLISHER) private readonly publisher: MessagePublisher,
+    @Optional() private readonly metrics?: MetricsService,
   ) {}
 
   async enqueueTransferCompleted(
@@ -41,6 +48,7 @@ export class PaymentsOutboxService
       throw new Error('Completed transfer is missing receiver wallet');
     }
     const occurredAt = new Date();
+    const carrier = captureTraceCarrier();
     const event: PaymentIntegrationEvent = {
       eventId: randomUUID(),
       eventType: 'payments.transfer.Completed',
@@ -48,7 +56,8 @@ export class PaymentsOutboxService
       occurredAt: occurredAt.toISOString(),
       producer: 'payments-service',
       correlationId: transfer.id,
-      traceId: null,
+      traceId: activeTraceId(),
+      ...carrier,
       aggregate: {
         type: 'Transfer',
         id: transfer.id,
@@ -188,6 +197,7 @@ export class PaymentsOutboxService
     eventId: string = randomUUID(),
   ): Promise<void> {
     const occurredAt = new Date();
+    const carrier = captureTraceCarrier();
     const event: PaymentIntegrationEvent = {
       eventId,
       eventType,
@@ -195,7 +205,8 @@ export class PaymentsOutboxService
       occurredAt: occurredAt.toISOString(),
       producer: 'payments-service',
       correlationId,
-      traceId: null,
+      traceId: activeTraceId(),
+      ...carrier,
       aggregate: { type: aggregateType, id: aggregateId, version: 1 },
       payload,
     };
@@ -246,6 +257,7 @@ export class PaymentsOutboxService
         );
       }
     }
+    await this.updateBacklogMetric();
     return claimed.length;
   }
 
@@ -319,5 +331,20 @@ export class PaymentsOutboxService
 
   private errorMessage(error: unknown): string {
     return (error instanceof Error ? error.message : String(error)).slice(0, 2000);
+  }
+
+  private async updateBacklogMetric(): Promise<void> {
+    if (!this.metrics) return;
+    try {
+      const count = await this.dataSource
+        .getRepository(PaymentOutboxMessage)
+        .count({ where: { publishedAt: IsNull() } });
+      this.metrics.outboxBacklog.set(count);
+    } catch (error: unknown) {
+      this.logger.warn(
+        'Could not update outbox backlog metric',
+        this.errorMessage(error),
+      );
+    }
   }
 }

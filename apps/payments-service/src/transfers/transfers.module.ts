@@ -7,6 +7,7 @@ import { LEDGER_GATEWAY, LedgerHttpClient } from './ledger.gateway';
 import { TransferSagaService } from './transfer-saga.service';
 import { TransfersController } from './transfers.controller';
 import { TransfersService } from './transfers.service';
+import { TransferRateLimitGuard } from './transfer-rate-limit.guard';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { TransfersService } from './transfers.service';
     TransfersService,
     TransferSagaService,
     LedgerHttpClient,
+    TransferRateLimitGuard,
     { provide: LEDGER_GATEWAY, useExisting: LedgerHttpClient },
   ],
   exports: [TransfersService, TransferSagaService],

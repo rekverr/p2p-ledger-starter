@@ -3,17 +3,23 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   OnApplicationBootstrap,
   OnApplicationShutdown,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { StoredEvent } from '../event-store/entities/stored-event.entity';
 import { JsonObject } from '../event-store/event-store.types';
 import { Wallet } from '../wallets/entities/wallet.entity';
 import { OutboxMessage } from './entities/outbox-message.entity';
 import { IntegrationEventEnvelope, walletRoutingKey } from './integration-event';
 import { MESSAGE_PUBLISHER, MessagePublisher } from './message-publisher';
+import {
+  activeTraceId,
+  captureTraceCarrier,
+} from '../observability/propagation';
+import { MetricsService } from '../observability/metrics.service';
 
 const DEFAULT_BATCH_SIZE = 50;
 const LOCK_DURATION_MS = 30_000;
@@ -30,6 +36,7 @@ export class OutboxService
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     @Inject(MESSAGE_PUBLISHER) private readonly publisher: MessagePublisher,
+    @Optional() private readonly metrics?: MetricsService,
   ) {}
 
   async enqueueWalletEvents(
@@ -40,6 +47,7 @@ export class OutboxService
     const outbox = manager.getRepository(OutboxMessage);
     await outbox.insert(
       events.map((event) => {
+        const carrier = captureTraceCarrier();
         const envelope: IntegrationEventEnvelope = {
           eventId: event.eventId,
           eventType: `ledger.wallet.${event.eventType}`,
@@ -47,7 +55,8 @@ export class OutboxService
           occurredAt: event.createdAt.toISOString(),
           producer: 'ledger-service',
           correlationId: event.correlationId,
-          traceId: event.traceId,
+          traceId: activeTraceId() ?? event.traceId,
+          ...carrier,
           aggregate: {
             type: event.aggregateType,
             id: event.streamId,
@@ -110,6 +119,7 @@ export class OutboxService
         );
       }
     }
+    await this.updateBacklogMetric();
     return claimed.length;
   }
 
@@ -183,5 +193,17 @@ export class OutboxService
 
   private errorMessage(error: unknown): string {
     return (error instanceof Error ? error.message : String(error)).slice(0, 2000);
+  }
+
+  private async updateBacklogMetric(): Promise<void> {
+    if (!this.metrics) return;
+    try {
+      const count = await this.dataSource.getRepository(OutboxMessage).count({
+        where: { publishedAt: IsNull() },
+      });
+      this.metrics.outboxBacklog.set(count);
+    } catch (error: unknown) {
+      this.logger.warn('Could not update outbox backlog metric', this.errorMessage(error));
+    }
   }
 }

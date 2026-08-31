@@ -20,7 +20,7 @@ type AuthenticatedSocket = Socket & {
 
 @WebSocketGateway({
   namespace: '/activity',
-  cors: { origin: true, credentials: true },
+  cors: { origin: socketOriginAllowed, credentials: true },
 })
 export class ActivityRealtimeGateway
   implements OnGatewayInit, OnGatewayConnection
@@ -62,14 +62,12 @@ export class ActivityRealtimeGateway
   private authenticate(socket: AuthenticatedSocket): string {
     const secret = process.env.JWT_ACCESS_SECRET;
     if (!secret) throw new Error('JWT verification is not configured');
-    const authToken = socket.handshake.auth?.token;
     const header = socket.handshake.headers.authorization;
     const cookieToken = this.readCookie(
       socket.handshake.headers.cookie,
       'accessToken',
     );
     const token =
-      (typeof authToken === 'string' ? authToken : undefined) ??
       header?.match(/^Bearer\s+(.+)$/i)?.[1] ??
       cookieToken;
     if (!token) throw new Error('Access token is required');
@@ -92,4 +90,20 @@ export class ActivityRealtimeGateway
     }
     return undefined;
   }
+}
+
+function socketOriginAllowed(
+  origin: string | undefined,
+  callback: (error: Error | null, allowed?: boolean) => void,
+): void {
+  if (!origin) {
+    callback(null, true);
+    return;
+  }
+  const allowed = (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (allowed.includes(origin)) callback(null, true);
+  else callback(new Error('Origin not allowed'));
 }

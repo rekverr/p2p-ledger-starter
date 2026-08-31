@@ -38,4 +38,21 @@ describe('frontend BFF proxy', () => {
     expect(response.status).toBe(401);
     expect(upstreamFetch).not.toHaveBeenCalled();
   });
+
+  it('rejects a cross-site financial mutation before forwarding it', async () => {
+    const upstreamFetch = vi.spyOn(globalThis, 'fetch');
+    const request = new NextRequest('http://frontend/api/bff/transfers', {
+      method: 'POST',
+      headers: {
+        cookie: 'accessToken=signed.jwt.value',
+        origin: 'https://attacker.example',
+      },
+      body: '{}',
+    });
+
+    const response = await proxyBffRequest(request, ['transfers']);
+
+    expect(response.status).toBe(403);
+    expect(upstreamFetch).not.toHaveBeenCalled();
+  });
 });

@@ -5,6 +5,7 @@ import { HealthController } from './health.controller';
 import { getNotificationsDatabaseOptions } from './database/notifications-database.options';
 import { MessagingModule } from './messaging/messaging.module';
 import { ActivityModule } from './activity/activity.module';
+import { ObservabilityModule } from './observability/observability.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { ActivityModule } from './activity/activity.module';
     }),
     MessagingModule,
     ActivityModule,
+    ObservabilityModule,
   ],
   controllers: [HealthController],
 })

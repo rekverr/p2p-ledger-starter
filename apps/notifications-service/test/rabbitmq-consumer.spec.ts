@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { propagation } from '@opentelemetry/api';
 import { Channel, ChannelModel, ConsumeMessage } from 'amqplib';
 import { ActivityFeedService } from '../src/activity/activity-feed.service';
 import { BrokerConnector } from '../src/messaging/broker-connector';
@@ -11,9 +12,16 @@ describe('RabbitMqConsumerService', () => {
 
   afterEach(() => {
     process.env = { ...originalEnvironment };
+    propagation.disable();
   });
 
   it('emits once after durable processing and suppresses duplicate delivery', async () => {
+    const extract = jest.fn((context) => context);
+    propagation.setGlobalPropagator({
+      fields: () => ['traceparent'],
+      inject: () => undefined,
+      extract,
+    });
     const channel = fakeChannel();
     const connection = fakeConnection(channel.value);
     const inbox = {
@@ -43,6 +51,14 @@ describe('RabbitMqConsumerService', () => {
     await waitFor(() => channel.ack.mock.calls.length === 2);
 
     expect(inbox.process).toHaveBeenCalledTimes(2);
+    expect(extract).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        traceparent:
+          '00-11111111111111111111111111111111-2222222222222222-01',
+      }),
+      expect.anything(),
+    );
     expect(realtime.emitToUser).toHaveBeenCalledTimes(1);
     expect(realtime.emitToUser).toHaveBeenCalledWith(
       'user-1',
@@ -144,7 +160,14 @@ function message(): ConsumeMessage {
         payload: { senderUserId: 'user-1' },
       }),
     ),
-  } as ConsumeMessage;
+    properties: {
+      headers: {
+        traceparent:
+          '00-11111111111111111111111111111111-2222222222222222-01',
+      },
+    },
+    fields: { routingKey: 'payments.transfer.completed.v1' },
+  } as unknown as ConsumeMessage;
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

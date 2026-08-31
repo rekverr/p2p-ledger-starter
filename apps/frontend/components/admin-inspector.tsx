@@ -35,7 +35,16 @@ export function AdminInspector() {
           <button onClick={() => void inspect('reconciliation/global')}>Global reconciliation</button>
         </div>
       </section>
-      <p className="muted">Trace/timing backend endpoint ще не доступний; UI не симулює observability data.</p>
+      <p className="muted">
+        Distributed traces:{' '}
+        <a
+          href={process.env.NEXT_PUBLIC_JAEGER_URL ?? 'http://localhost:16686'}
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          відкрити Jaeger
+        </a>
+      </p>
       {error && <p className="error">{error}</p>}
       {result !== null && <pre className="card" style={{ overflow: 'auto' }}>{JSON.stringify(result, null, 2)}</pre>}
     </main>

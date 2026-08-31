@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Transfer } from './entities/transfer.entity';
+import { currentCorrelationId } from '../observability/context';
+import { injectTraceHeaders } from '../observability/propagation';
 
 export const LEDGER_GATEWAY = Symbol('LEDGER_GATEWAY');
 
@@ -141,10 +143,13 @@ export class LedgerHttpClient implements LedgerGateway {
       }
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: 'POST',
-        headers: {
+        headers: injectTraceHeaders({
           'content-type': 'application/json',
           'x-service-token': serviceToken,
-        },
+          ...(currentCorrelationId()
+            ? { 'x-correlation-id': currentCorrelationId() as string }
+            : {}),
+        }),
         body: JSON.stringify(body),
         signal: controller.signal,
       });

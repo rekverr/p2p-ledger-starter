@@ -69,11 +69,21 @@ services:
       timeout: 5s
       retries: 12
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      COLLECTOR_OTLP_ENABLED: 'true'
+    ports:
+      - '16686:16686'
+      - '4318:4318'
+
   ledger-service:
     build: ./apps/ledger-service
     env_file: ./apps/ledger-service/.env.example
     environment:
       DATABASE_HOST: ledger-db
+      OTEL_SERVICE_NAME: ledger-service
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
     depends_on:
       ledger-db:
         condition: service_healthy
@@ -88,6 +98,9 @@ services:
   payments-service:
     build: ./apps/payments-service
     env_file: ./apps/payments-service/.env.example
+    environment:
+      OTEL_SERVICE_NAME: payments-service
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
     depends_on:
       payments-db:
         condition: service_healthy
@@ -102,6 +115,9 @@ services:
   notifications-service:
     build: ./apps/notifications-service
     env_file: ./apps/notifications-service/.env.example
+    environment:
+      OTEL_SERVICE_NAME: notifications-service
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
     depends_on:
       notifications-db:
         condition: service_healthy
@@ -116,6 +132,9 @@ services:
   gateway-service:
     build: ./apps/gateway-service
     env_file: ./apps/gateway-service/.env.example
+    environment:
+      OTEL_SERVICE_NAME: gateway-service
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
     depends_on:
       - ledger-service
       - payments-service
@@ -129,6 +148,8 @@ services:
     environment:
       GATEWAY_SERVICE_URL: http://gateway-service:3004
       NEXT_PUBLIC_NOTIFICATIONS_WS_URL: http://localhost:3003
+      NEXT_PUBLIC_JAEGER_URL: http://localhost:16686
+      FRONTEND_ORIGIN: http://localhost:3000
     depends_on:
       - gateway-service
     ports:

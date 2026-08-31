@@ -1,10 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { gatewayBffUrl } from '@/lib/api';
+import { isTrustedMutationOrigin } from '../request-security';
 
 export async function proxyBffRequest(
   request: NextRequest,
   segments: string[],
 ): Promise<NextResponse> {
+  if (
+    request.method !== 'GET' &&
+    request.method !== 'HEAD' &&
+    !isTrustedMutationOrigin(request)
+  ) {
+    return NextResponse.json({ message: 'Untrusted request origin' }, { status: 403 });
+  }
   const accessToken = request.cookies.get('accessToken')?.value;
   if (!accessToken) {
     return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });

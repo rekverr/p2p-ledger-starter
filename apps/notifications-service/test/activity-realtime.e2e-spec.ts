@@ -79,7 +79,9 @@ describe('authenticated activity WebSocket', () => {
       forceNew: true,
       reconnection: false,
       transports: ['websocket'],
-      auth: accessToken ? { token: accessToken } : {},
+      extraHeaders: accessToken
+        ? { Cookie: `accessToken=${encodeURIComponent(accessToken)}` }
+        : undefined,
     });
     clients.push(client);
     return client;

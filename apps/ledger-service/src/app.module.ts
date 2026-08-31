@@ -6,6 +6,7 @@ import { WalletsModule } from './wallets/wallets.module';
 import { getLedgerDatabaseOptions } from './database/ledger-database.options';
 import { EventStoreModule } from './event-store/event-store.module';
 import { AdminLedgerModule } from './admin/admin-ledger.module';
+import { ObservabilityModule } from './observability/observability.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { AdminLedgerModule } from './admin/admin-ledger.module';
     WalletsModule,
     EventStoreModule,
     AdminLedgerModule,
+    ObservabilityModule,
   ],
 })
 export class AppModule {}

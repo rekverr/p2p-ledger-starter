@@ -1,7 +1,12 @@
 import { once } from 'events';
 import { ChannelModel, ConfirmChannel, Options, connect } from 'amqplib';
 import { Injectable, OnApplicationShutdown } from '@nestjs/common';
+import { context, SpanKind, trace } from '@opentelemetry/api';
 import { PaymentIntegrationEvent } from './integration-event';
+import {
+  captureTraceCarrier,
+  extractTraceContext,
+} from '../observability/propagation';
 
 export const MESSAGE_PUBLISHER = Symbol('PAYMENTS_MESSAGE_PUBLISHER');
 
@@ -20,7 +25,43 @@ export class RabbitMqMessagePublisher
     routingKey: string,
     event: PaymentIntegrationEvent,
   ): Promise<void> {
+    const parent = extractTraceContext({
+      traceparent: event.traceparent,
+      tracestate: event.tracestate,
+    });
+    return context.with(parent, async () => {
+      const span = trace.getTracer('payments-service').startSpan(
+        'rabbitmq publish',
+        {
+          kind: SpanKind.PRODUCER,
+          attributes: {
+            'messaging.system': 'rabbitmq',
+            'messaging.destination.name': this.exchange,
+            'messaging.rabbitmq.routing_key': routingKey,
+            'messaging.operation.type': 'publish',
+          },
+        },
+        context.active(),
+      );
+      try {
+        await context.with(trace.setSpan(context.active(), span), () =>
+          this.publishWithinSpan(routingKey, event),
+        );
+      } catch (error: unknown) {
+        span.recordException(error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  private async publishWithinSpan(
+    routingKey: string,
+    event: PaymentIntegrationEvent,
+  ): Promise<void> {
     const channel = await this.getChannel();
+    const carrier = captureTraceCarrier();
     const options: Options.Publish = {
       persistent: true,
       contentType: 'application/json',
@@ -32,6 +73,8 @@ export class RabbitMqMessagePublisher
         schemaVersion: event.schemaVersion,
         correlationId: event.correlationId,
         traceId: event.traceId,
+        traceparent: carrier.traceparent ?? event.traceparent,
+        tracestate: carrier.tracestate ?? event.tracestate,
       },
     };
     try {

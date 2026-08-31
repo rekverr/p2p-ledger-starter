@@ -3,6 +3,8 @@ import {
   HttpException,
   Injectable,
 } from '@nestjs/common';
+import { currentCorrelationId } from './observability/context';
+import { injectTraceHeaders } from './observability/propagation';
 
 export type UpstreamName = 'ledger' | 'payments' | 'notifications';
 
@@ -26,7 +28,7 @@ export class UpstreamService {
     try {
       const response = await fetch(`${this.baseUrl(service)}${path}`, {
         method: options.method ?? 'GET',
-        headers: {
+        headers: injectTraceHeaders({
           'content-type': 'application/json',
           ...(options.authorization
             ? { authorization: options.authorization }
@@ -34,7 +36,10 @@ export class UpstreamService {
           ...(options.idempotencyKey
             ? { 'idempotency-key': options.idempotencyKey }
             : {}),
-        },
+          ...(currentCorrelationId()
+            ? { 'x-correlation-id': currentCorrelationId() as string }
+            : {}),
+        }),
         body:
           options.body === undefined
             ? undefined

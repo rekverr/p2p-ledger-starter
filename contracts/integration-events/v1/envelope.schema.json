@@ -23,6 +23,8 @@
     "producer": { "type": "string", "minLength": 1 },
     "correlationId": { "type": ["string", "null"] },
     "traceId": { "type": ["string", "null"] },
+    "traceparent": { "type": "string", "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$" },
+    "tracestate": { "type": "string", "maxLength": 512 },
     "aggregate": {
       "type": "object",
       "additionalProperties": false,

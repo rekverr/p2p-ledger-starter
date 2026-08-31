@@ -6,6 +6,8 @@ export interface PaymentIntegrationEvent {
   producer: 'payments-service';
   correlationId: string;
   traceId: string | null;
+  traceparent?: string;
+  tracestate?: string;
   aggregate: {
     type: 'Transfer' | 'SplitBill' | 'SplitBillShare';
     id: string;

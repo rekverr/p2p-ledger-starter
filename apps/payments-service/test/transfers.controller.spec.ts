@@ -4,6 +4,7 @@ import { JwtAuthGuard } from '../src/auth/jwt-auth.guard';
 import { TransfersController } from '../src/transfers/transfers.controller';
 import { TransfersService } from '../src/transfers/transfers.service';
 import { TransferSagaService } from '../src/transfers/transfer-saga.service';
+import { TransferRateLimitGuard } from '../src/transfers/transfer-rate-limit.guard';
 
 describe('TransfersController', () => {
   it('passes Idempotency-Key and authenticated principal to the service', async () => {
@@ -38,5 +39,8 @@ describe('TransfersController', () => {
     expect(Reflect.getMetadata(GUARDS_METADATA, TransfersController)).toEqual([
       JwtAuthGuard,
     ]);
+    expect(
+      Reflect.getMetadata(GUARDS_METADATA, TransfersController.prototype.create),
+    ).toEqual([TransferRateLimitGuard]);
   });
 });

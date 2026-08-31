@@ -13,6 +13,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CreateTransferDto } from './dto/create-transfer.dto';
 import { TransfersService } from './transfers.service';
 import { TransferSagaService } from './transfer-saga.service';
+import { TransferRateLimitGuard } from './transfer-rate-limit.guard';
 
 interface AuthenticatedRequest {
   user: { userId: string; email: string; role: string };
@@ -27,6 +28,7 @@ export class TransfersController {
   ) {}
 
   @Post()
+  @UseGuards(TransferRateLimitGuard)
   async create(
     @Body() dto: CreateTransferDto,
     @Headers('idempotency-key') idempotencyKey: string | undefined,

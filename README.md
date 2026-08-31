@@ -22,8 +22,9 @@
 
 - FX та fraud/limit provider ще не реалізовані;
   same-currency transfer rules перевіряються ledger-service.
-- Trace/timing backend для admin UI ще не реалізований; event log і
-  reconciliation доступні через захищений admin BFF.
+- Production-grade dashboards/alerting і централізоване log storage ще не
+  налаштовані. Локальний Jaeger, OpenTelemetry traces, Prometheus-compatible
+  `/metrics`, event log і reconciliation доступні для inspection.
 
 ## Multi-service infrastructure
 
@@ -38,6 +39,7 @@ flowchart LR
   PDB[(payments PostgreSQL)]
   NDB[(notifications PostgreSQL)]
   RMQ[(RabbitMQ topic exchange)]
+  J[Jaeger / OTLP]
 
   FE -->|same-origin HTTP; httpOnly cookie| BFF
   BFF -->|Bearer JWT; read/command APIs| L
@@ -51,6 +53,10 @@ flowchart LR
   LDB -->|outbox relay + publisher confirm| RMQ
   RMQ -->|durable queue, manual ack| N
   N -->|JWT-authenticated user room| FE
+  BFF -.->|OTLP traces| J
+  P -.->|OTLP traces| J
+  L -.->|OTLP traces| J
+  N -.->|OTLP traces| J
 ```
 
 Кожен backend container отримує credentials лише своєї database і приєднаний
@@ -308,8 +314,10 @@ principal. Endpoint підтримує `limit` (1–100), opaque cursor paginati
 optional exact `eventType` filter. Composite DB index підтримує owner/type/time
 query; notifications DB не містить balance чи transfer source-of-truth tables.
 
-Socket.IO namespace `/activity` також вимагає access JWT: browser може передати
-його через `auth.token`, bearer header або існуючу httpOnly `accessToken` cookie.
+Socket.IO namespace `/activity` також вимагає access JWT: browser використовує
+існуючу httpOnly `accessToken` cookie, а non-browser client може передати bearer
+header. Token у Socket.IO `auth` payload навмисно не підтримується, щоб browser
+JavaScript не отримував access token.
 Server сам додає socket лише до room `user:<JWT sub>`; client не може вибрати
 іншого user/channel. Після durable DB commit новий item надсилається як
 `activity` тільки цьому room.
@@ -320,6 +328,53 @@ ledger-service та durable feed через `/api/activity` (BFF proxy до
 notifications-service). Тому crash у вузькому проміжку після DB commit і до
 socket emit може пропустити push, але не activity record і не authoritative
 financial state.
+
+## Observability і security model
+
+Кожен NestJS service стартує OpenTelemetry SDK до завантаження application
+modules. W3C `traceparent`/`tracestate` автоматично поширюються через HTTP;
+gateway та payments також явно переносять їх через service clients. При записі
+transactional outbox producer зберігає trace context поруч з integration event,
+publisher додає його в RabbitMQ headers, а notifications consumer продовжує
+trace окремим consumer span. `x-correlation-id` генерується або валідується на
+HTTP boundary і передається через HTTP та event envelope.
+
+Логи є JSON і містять `service`, `traceId`, `correlationId` та релевантний
+`transferId`/aggregate ID. Logger recursively redacts password, token, cookie,
+authorization і secret fields та bearer-like values. Request metrics
+використовують route templates, а не UUID/user/event IDs, тому labels мають
+bounded cardinality.
+
+Prometheus-compatible metrics доступні на `/metrics` кожного backend service.
+Вони включають request count/error/latency, transfer outcomes, saga/step
+duration, retries, compensations, outbox backlog, consumer failures і
+reconciliation failures. Локальний Jaeger UI доступний на
+`http://localhost:16686`; admin UI показує зовнішнє посилання на нього, але не
+проксіює tracing backend через public API.
+
+Security boundaries:
+
+- ledger/payments/notifications і BFF fail closed без `JWT_ACCESS_SECRET`;
+  passwords, JWT та authorization headers не логуються;
+- wallet/admin/activity/transfer routes мають server-side guards, identity
+  походить з JWT principal, а ledger повторно перевіряє ownership persisted
+  source wallet під час internal saga commands;
+- browser mutations проходять same-origin Origin check у Next.js route
+  handlers; backend CORS використовує explicit `CORS_ORIGINS` allow-list;
+- login має fixed-window limit (default 10/min/IP) у BFF і ledger, transfer
+  creation — 30/min/authenticated principal у payments. Rate limiting не
+  замінює persisted `Idempotency-Key`;
+- payments→ledger commands вимагають timing-safe checked service token.
+  Integration consumer також allow-list-ить producer/event/routing-key
+  combinations; service DB credentials не перетинаються;
+- inspected raw SQL і query-builder paths bind user input as parameters; UI
+  покладається на React escaping і не використовує raw HTML rendering.
+
+Local Compose secrets і спільний RabbitMQ user є лише development defaults.
+Для production потрібні secret manager, TLS/mTLS або workload identity,
+окремі broker users/vhost permissions та network policy. Поточний rate limiter
+process-local; multi-instance deployment потребує shared limiter або enforcement
+на edge. `/metrics` у production також слід обмежити private monitoring network.
 
 ## Запуск
 
@@ -334,6 +389,8 @@ docker-compose up --build
 - authenticated recent activity: `GET http://localhost:3003/activity`
 - frontend: http://localhost:3000
 - frontend-facing BFF: http://localhost:3004
+- Jaeger trace UI: http://localhost:16686
+- metrics: `http://localhost:3001..3004/metrics`
 
 Для локальної розробки без Docker: скопіюйте `.env.example` → `.env` у
 кожному сервісі, підніміть Postgres окремо, `npm ci && npm run start:dev`

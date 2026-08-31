@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { Between, DataSource } from 'typeorm';
 import { StoredEvent } from '../event-store/entities/stored-event.entity';
@@ -12,14 +12,18 @@ import {
 } from '../wallets/domain/wallet.aggregate';
 import { WalletBalanceProjection } from '../wallets/entities/wallet-balance-projection.entity';
 import { Wallet } from '../wallets/entities/wallet.entity';
+import { MetricsService } from '../observability/metrics.service';
 
 const POSTING_EVENTS = [MONEY_DEPOSITED, WITHDRAWAL_COMPLETED, HOLD_CONSUMED];
 
 @Injectable()
 export class LedgerMaintenanceService {
+  private readonly logger = new Logger(LedgerMaintenanceService.name);
+
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly eventStore: EventStoreService,
+    @Optional() private readonly metrics?: MetricsService,
   ) {}
 
   async walletEventLog(walletId: string): Promise<StoredEvent[]> {
@@ -46,7 +50,7 @@ export class LedgerMaintenanceService {
           streamVersion: projection.streamVersion,
         }
       : null;
-    return {
+    const result = {
       walletId,
       consistent:
         materialized !== null &&
@@ -54,6 +58,14 @@ export class LedgerMaintenanceService {
       eventDerived: derived,
       projection: materialized,
     };
+    if (!result.consistent) {
+      this.metrics?.reconciliationFailures.inc({ scope: 'wallet' });
+      this.logger.warn({
+        event: 'wallet_reconciliation_failed',
+        walletId,
+      });
+    }
+    return result;
   }
 
   async reconcileGlobal(from?: string, to?: string) {
@@ -83,7 +95,7 @@ export class LedgerMaintenanceService {
         else debits += -amount;
       }
     }
-    return {
+    const result = {
       from: start.toISOString(),
       to: end.toISOString(),
       transactionCount,
@@ -93,6 +105,14 @@ export class LedgerMaintenanceService {
       balanced:
         invalidTransactionEventIds.length === 0 && credits === debits,
     };
+    if (!result.balanced) {
+      this.metrics?.reconciliationFailures.inc({ scope: 'global' });
+      this.logger.warn({
+        event: 'global_reconciliation_failed',
+        invalidTransactionCount: invalidTransactionEventIds.length,
+      });
+    }
+    return result;
   }
 
   async rebuildAllBalanceProjections() {

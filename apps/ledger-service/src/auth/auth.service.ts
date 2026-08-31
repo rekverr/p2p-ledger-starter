@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -51,7 +52,7 @@ export class AuthService {
     let payload: { sub: string };
     try {
       payload = this.jwt.verify(refreshToken, {
-        secret: process.env.JWT_REFRESH_SECRET ?? 'change-me-refresh',
+        secret: this.secret('JWT_REFRESH_SECRET'),
       });
     } catch {
       throw new UnauthorizedException('Невалідний refresh token');
@@ -70,15 +71,21 @@ export class AuthService {
   private async issueTokens(user: User): Promise<TokenPair> {
     const payload = { sub: user.id, email: user.email, role: user.role };
     const accessToken = this.jwt.sign(payload, {
-      secret: process.env.JWT_ACCESS_SECRET ?? 'change-me-access',
+      secret: this.secret('JWT_ACCESS_SECRET'),
       expiresIn: process.env.JWT_ACCESS_TTL ?? '15m',
     });
     const refreshToken = this.jwt.sign(payload, {
-      secret: process.env.JWT_REFRESH_SECRET ?? 'change-me-refresh',
+      secret: this.secret('JWT_REFRESH_SECRET'),
       expiresIn: process.env.JWT_REFRESH_TTL ?? '7d',
     });
     user.refreshTokenHash = await bcrypt.hash(refreshToken, 10);
     await this.users.save(user);
     return { accessToken, refreshToken };
+  }
+
+  private secret(name: 'JWT_ACCESS_SECRET' | 'JWT_REFRESH_SECRET'): string {
+    const value = process.env[name];
+    if (!value) throw new ServiceUnavailableException(`${name} is not configured`);
+    return value;
   }
 }

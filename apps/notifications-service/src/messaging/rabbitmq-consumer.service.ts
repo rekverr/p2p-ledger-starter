@@ -2,15 +2,23 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   OnApplicationBootstrap,
   OnApplicationShutdown,
 } from '@nestjs/common';
+import { SpanKind, trace } from '@opentelemetry/api';
 import { Channel, ChannelModel, ConsumeMessage } from 'amqplib';
 import { ActivityFeedService } from '../activity/activity-feed.service';
 import { ActivityRealtimeGateway } from '../realtime/activity-realtime.gateway';
 import { BROKER_CONNECTOR, BrokerConnector } from './broker-connector';
 import { InboxService } from './inbox.service';
-import { parseIntegrationEvent } from './integration-event';
+import {
+  assertTrustedIntegrationEvent,
+  parseIntegrationEvent,
+} from './integration-event';
+import { MetricsService } from '../observability/metrics.service';
+import { extractTraceContext } from '../observability/propagation';
+import { withRequestContext } from '../observability/context';
 
 @Injectable()
 export class RabbitMqConsumerService
@@ -29,6 +37,7 @@ export class RabbitMqConsumerService
     private readonly activities: ActivityFeedService,
     private readonly realtime: ActivityRealtimeGateway,
     @Inject(BROKER_CONNECTOR) private readonly connector: BrokerConnector,
+    @Optional() private readonly metrics?: MetricsService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -129,27 +138,70 @@ export class RabbitMqConsumerService
       event = parseIntegrationEvent(
         JSON.parse(message.content.toString('utf8')) as unknown,
       );
+      assertTrustedIntegrationEvent(event, message.fields.routingKey);
     } catch {
+      this.metrics?.brokerConsumerFailures.inc({ reason: 'invalid_envelope' });
       channel.nack(message, false, false);
       return;
     }
-    try {
-      const processed = await this.inbox.process(
-        'notifications.activity-feed.v1',
-        event,
-        (manager, current) => this.activities.record(manager, current),
-      );
-      if (processed) {
-        const userId = this.activities.userIdFor(event);
-        if (userId) this.realtime.emitToUser(userId, event);
-      }
-      channel.ack(message);
-    } catch {
-      channel.nack(message, false, true);
-    }
+    const headers = message.properties.headers ?? {};
+    const parent = extractTraceContext({
+      traceparent: headerString(headers.traceparent) ?? event.traceparent,
+      tracestate: headerString(headers.tracestate) ?? event.tracestate,
+    });
+    await withRequestContext(event.correlationId ?? event.eventId, () =>
+      trace.getTracer('notifications-service').startActiveSpan(
+        'rabbitmq consume',
+        {
+          kind: SpanKind.CONSUMER,
+          attributes: {
+            'messaging.system': 'rabbitmq',
+            'messaging.operation.type': 'process',
+            'messaging.message.type': event.eventType,
+            'messaging.message.id': event.eventId,
+            'business.aggregate.id': event.aggregate.id,
+          },
+        },
+        parent,
+        async (span) => {
+          try {
+            const processed = await this.inbox.process(
+              'notifications.activity-feed.v1',
+              event,
+              (manager, current) => this.activities.record(manager, current),
+            );
+            if (processed) {
+              const userId = this.activities.userIdFor(event);
+              if (userId) this.realtime.emitToUser(userId, event);
+            }
+            channel.ack(message);
+          } catch (error: unknown) {
+            this.metrics?.brokerConsumerFailures.inc({ reason: 'handler_error' });
+            this.logger.warn({
+              event: 'broker_message_processing_failed',
+              correlationId: event.correlationId,
+              aggregateId: event.aggregate.id,
+              eventType: event.eventType,
+            });
+            span.recordException(
+              error instanceof Error ? error : new Error(String(error)),
+            );
+            channel.nack(message, false, true);
+          } finally {
+            span.end();
+          }
+        },
+      ),
+    );
   }
 
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+function headerString(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (Buffer.isBuffer(value)) return value.toString('utf8');
+  return undefined;
 }

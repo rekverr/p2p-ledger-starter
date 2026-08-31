@@ -8,6 +8,8 @@ export interface IntegrationEventEnvelope {
   producer: string;
   correlationId: string | null;
   traceId: string | null;
+  traceparent?: string;
+  tracestate?: string;
   aggregate: {
     type: string;
     id: string;

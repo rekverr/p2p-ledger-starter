@@ -6,6 +6,8 @@ export interface IntegrationEventEnvelope {
   producer: string;
   correlationId: string | null;
   traceId: string | null;
+  traceparent?: string;
+  tracestate?: string;
   aggregate: {
     type: string;
     id: string;
@@ -38,4 +40,21 @@ export function parseIntegrationEvent(value: unknown): IntegrationEventEnvelope 
     throw new Error('Invalid event envelope');
   }
   return event as IntegrationEventEnvelope;
+}
+
+export function assertTrustedIntegrationEvent(
+  event: IntegrationEventEnvelope,
+  routingKey: string,
+): void {
+  const ledger =
+    event.producer === 'ledger-service' &&
+    event.eventType.startsWith('ledger.wallet.') &&
+    routingKey.startsWith('ledger.');
+  const payments =
+    event.producer === 'payments-service' &&
+    event.eventType.startsWith('payments.') &&
+    routingKey.startsWith('payments.');
+  if (!ledger && !payments) {
+    throw new Error('Untrusted producer, event type or routing key combination');
+  }
 }
