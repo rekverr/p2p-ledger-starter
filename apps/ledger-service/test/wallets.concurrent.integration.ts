@@ -120,6 +120,76 @@ describe('WalletsService PostgreSQL concurrency', () => {
     await expect(service.getById(wallet.id, owner.id)).resolves.toMatchObject({ balance: '10.00' });
   });
 
+  it('reports a repeatable 100-request double-spend load scenario', async () => {
+    const startingBalance = 1000;
+    const amount = 100;
+    const concurrency = 100;
+    const expectedMaximumSuccesses = startingBalance / amount;
+    const { owner, wallet } = await createWallet(startingBalance);
+    const startedAt = performance.now();
+
+    const attempts = await Promise.allSettled(
+      Array.from({ length: concurrency }, () =>
+        service.withdraw(wallet.id, owner.id, amount),
+      ),
+    );
+
+    const durationMs = Math.round(performance.now() - startedAt);
+    const successful = attempts.filter(
+      (attempt): attempt is PromiseFulfilledResult<WalletView> =>
+        attempt.status === 'fulfilled',
+    );
+    const rejected = attempts.filter(
+      (attempt): attempt is PromiseRejectedResult => attempt.status === 'rejected',
+    );
+    expect(successful.length).toBeLessThanOrEqual(expectedMaximumSuccesses);
+    expect(rejected).toHaveLength(concurrency - successful.length);
+    expect(rejected.every(({ reason }) => reason instanceof BadRequestException)).toBe(true);
+
+    const finalWallet = await service.getById(wallet.id, owner.id);
+    const expectedFinalBalance = startingBalance - successful.length * amount;
+    expect(finalWallet).toMatchObject({
+      balance: expectedFinalBalance.toFixed(2),
+      held: '0.00',
+      available: expectedFinalBalance.toFixed(2),
+    });
+    expect(Number(finalWallet.available)).toBeGreaterThanOrEqual(0);
+
+    const events = await eventStore.loadStream(wallet.id);
+    const withdrawals = events.filter(
+      ({ eventType }) => eventType === 'WithdrawalCompleted',
+    );
+    expect(withdrawals).toHaveLength(successful.length);
+    expect(new Set(events.map(({ eventId }) => eventId)).size).toBe(events.length);
+    expect(events.map(({ streamVersion }) => streamVersion)).toEqual(
+      events.map((_, index) => index + 1),
+    );
+    await expect(maintenance.reconcileWallet(wallet.id)).resolves.toMatchObject({
+      consistent: true,
+    });
+    await expect(maintenance.reconcileGlobal()).resolves.toMatchObject({
+      balanced: true,
+      invalidTransactionEventIds: [],
+    });
+
+    process.stdout.write(
+      `${JSON.stringify({
+        event: 'double_spend_load_report',
+        startingBalance: startingBalance.toFixed(2),
+        concurrency,
+        attempts: concurrency,
+        amount: amount.toFixed(2),
+        expectedMaximumSuccesses,
+        actualSuccesses: successful.length,
+        finalBalance: finalWallet.balance,
+        finalHeld: finalWallet.held,
+        finalAvailable: finalWallet.available,
+        reconciliation: true,
+        durationMs,
+      })}\n`,
+    );
+  });
+
   it('does not lose concurrent deposits', async () => {
     const { owner, wallet } = await createWallet();
     await Promise.all(Array.from({ length: 10 }, () => service.deposit(wallet.id, owner.id, 10)));

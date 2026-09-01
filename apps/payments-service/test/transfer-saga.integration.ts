@@ -209,6 +209,16 @@ describe('persisted transfer saga', () => {
     expect(ledger.heldMinor(transfer.id)).toBe(0n);
     expect(ledger.senderBalanceMinor).toBe(10_000n);
     expect(ledger.receiverBalanceMinor).toBe(0n);
+    expect(ledger.releaseCalls).toBe(1);
+
+    await saga.run(transfer.id);
+    await saga.run(transfer.id);
+    await expect(statusOf(transfer.id)).resolves.toBe(TransferStatus.Failed);
+    expect(ledger.releaseCalls).toBe(1);
+    expect(ledger.monetaryEffects).toBe(0);
+    expect(ledger.heldMinor(transfer.id)).toBe(0n);
+    expect(ledger.senderBalanceMinor).toBe(10_000n);
+    expect(ledger.receiverBalanceMinor).toBe(0n);
   });
 
   it('recovers a temporary ledger failure from persisted retry state', async () => {
@@ -218,6 +228,15 @@ describe('persisted transfer saga', () => {
 
     await saga.run(transfer.id, startedAt);
     await expect(statusOf(transfer.id)).resolves.toBe(TransferStatus.Validating);
+    await expect(
+      dataSource.getRepository(Transfer).findOneByOrFail({ id: transfer.id }),
+    ).resolves.toMatchObject({
+      retryCount: 1,
+      failureCode: 'LEDGER_UNAVAILABLE',
+      holdMayExist: false,
+    });
+    expect(ledger.senderBalanceMinor).toBe(10_000n);
+    expect(ledger.receiverBalanceMinor).toBe(0n);
 
     await saga.recoverDue(new Date(startedAt.getTime() + 100), 10);
     await expect(statusOf(transfer.id)).resolves.toBe(TransferStatus.Completed);

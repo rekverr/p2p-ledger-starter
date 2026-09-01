@@ -409,6 +409,42 @@ cd ../frontend && npm test && npm run lint && npm run build
 
 Не всі тести в репозиторії однаково надійні — це навмисно, дивись ТЗ.
 
+### Consolidated system-correctness E2E
+
+Після healthy `docker compose up --build -d` виконайте:
+
+```bash
+node scripts/verify-system-correctness.mjs
+```
+
+Harness використовує реальні HTTP boundaries, окремі service databases,
+RabbitMQ management publish API та authenticated Socket.IO. Він створює трьох
+ізольованих users з унікальним run ID і перевіряє не лише HTTP status, а:
+
+- completed transfer, одну payments row і одну ledger settlement receipt;
+- sender/receiver balances, holds, projections, event types і contiguous stream
+  versions;
+- sequential і concurrent reuse одного `Idempotency-Key`;
+- duplicate RabbitMQ delivery: один durable inbox marker і один activity item;
+- 100 parallel withdrawals по `100.00` зі starting balance `1000.00`, event
+  uniqueness/ordering, non-negative available balance і wallet reconciliation;
+- global debit/credit equality та відсутність invalid transaction events;
+- реальну зупинку `ledger-service`: bounded failure, persisted retry state,
+  незмінний balance до recovery і завершення transfer після restart;
+- authenticated WebSocket disconnect/reconnect і повторне authoritative читання
+  transfer, wallet та activity feed.
+
+Скрипт завершується non-zero при першому порушенні й друкує machine-readable
+load report з expected/actual successes, final balances, reconciliation і
+duration. Він очікує local Compose credentials з цього development compose;
+проти production environment його запускати не можна.
+
+Failure-after-hold та service-outage paths перевіряються детерміновано в
+`payments-service/test/transfer-saga.integration.ts`: injected terminal failure
+після hold, harmless repeated compensation, persisted retry state, bounded HTTP
+timeout/retries і restart recovery. Browser reconnect callback окремо
+перевіряється у `frontend/test/live-refresh.spec.tsx`.
+
 ## Знайдені проблеми стартового коду
 
 ### IDOR у wallet endpoints
