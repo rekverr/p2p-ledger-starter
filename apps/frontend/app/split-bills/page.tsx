@@ -15,9 +15,9 @@ export default async function SplitBillsPage() {
     <main className="page">
       <h1>Split bills</h1>
       <CreateSplitBillForm />
-      <h2 style={{ marginTop: 32 }}>Мої рахунки</h2>
+      <h2 style={{ marginTop: 32 }}>My split bills</h2>
       {bills.length === 0 ? (
-        <p className="card">Split bills поки немає.</p>
+        <p className="card">You do not have any split bills yet.</p>
       ) : (
         <section className="grid">
           {bills.map((bill) => (

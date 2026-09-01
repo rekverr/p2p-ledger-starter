@@ -20,7 +20,7 @@ export default function RegisterPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-      if (!res.ok) throw new Error('Не вдалося зареєструватись');
+      if (!res.ok) throw new Error('Registration failed');
       router.push('/wallets');
       router.refresh();
     } catch (err) {
@@ -31,30 +31,32 @@ export default function RegisterPage() {
   }
 
   return (
-    <main style={{ maxWidth: 360, margin: '80px auto' }}>
-      <h1>Реєстрація</h1>
+    <main className="page narrow-page">
+      <section className="card form-card">
+      <p className="eyebrow">Create account</p><h1>Register</h1>
       <form onSubmit={onSubmit}>
-        <input
+        <label>Email<input
           type="email"
-          placeholder="Email"
+          autoComplete="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
-        />
-        <br />
-        <input
+        /></label>
+        <label>Password<input
           type="password"
-          placeholder="Пароль (мін. 8 символів)"
+          autoComplete="new-password"
+          minLength={8}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
-        />
-        <br />
-        {error && <p style={{ color: 'crimson' }}>{error}</p>}
+        /></label>
+        {error && <p className="error" role="alert">{error}</p>}
         <button type="submit" disabled={loading}>
-          {loading ? 'Реєстрація…' : 'Зареєструватись'}
+          {loading ? 'Creating account…' : 'Create account'}
         </button>
       </form>
+      <p>Already have an account? <a href="/login">Sign in</a></p>
+      </section>
     </main>
   );
 }

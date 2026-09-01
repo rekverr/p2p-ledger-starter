@@ -13,9 +13,9 @@ export default async function NewTransferPage() {
   }
   return (
     <main className="page">
-      <h1>Новий переказ</h1>
+      <h1>New transfer</h1>
       {wallets.length === 0 ? (
-        <p className="card">Спочатку потрібен гаманець.</p>
+        <p className="card">You need a wallet before creating a transfer.</p>
       ) : (
         <TransferForm wallets={wallets} />
       )}

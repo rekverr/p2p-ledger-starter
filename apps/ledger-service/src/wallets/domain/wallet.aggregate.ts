@@ -45,8 +45,8 @@ export class WalletAggregate {
     return {
       eventId: randomUUID(),
       eventType: WALLET_CREATED,
-      schemaVersion: 1,
-      payload: { ownerId, currency },
+      schemaVersion: 2,
+      payload: { ownerId, currencyCode: currency },
     };
   }
 
@@ -130,17 +130,26 @@ export class WalletAggregate {
     if (event.streamVersion !== this.version + 1) {
       throw new Error('Wallet event stream contains a version gap');
     }
-    if (event.schemaVersion !== 1) {
+    if (event.eventType !== WALLET_CREATED && event.schemaVersion !== 1) {
       throw new Error(
         `Unsupported ${event.eventType} schema version ${event.schemaVersion}`,
       );
     }
     if (event.eventType === WALLET_CREATED) {
-      const payload = event.payload as { ownerId?: unknown; currency?: unknown };
+      const payload = event.payload as {
+        ownerId?: unknown;
+        currency?: unknown;
+        currencyCode?: unknown;
+      };
+      const currency = event.schemaVersion === 1
+        ? payload.currency
+        : event.schemaVersion === 2
+          ? payload.currencyCode
+          : undefined;
       if (
         this.version !== 0 ||
         typeof payload.ownerId !== 'string' ||
-        typeof payload.currency !== 'string'
+        typeof currency !== 'string'
       ) {
         throw new Error('Invalid WalletCreated event');
       }
@@ -148,7 +157,7 @@ export class WalletAggregate {
         this.id,
         event.streamVersion,
         payload.ownerId,
-        payload.currency,
+        currency,
         0n,
         new Map(),
       );

@@ -74,6 +74,32 @@ describe('durable transfer creation and idempotency', () => {
     });
     expect(stored.amountMinor).toBe('1025');
     expect(stored.requestFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(stored).toMatchObject({
+      destinationCurrency: 'USD',
+      destinationAmountMinor: '1025',
+      fxRateNumerator: '1000000',
+      fxRateDenominator: '1000000',
+    });
+  });
+
+  it('persists a deterministic cross-currency quote and includes target currency in idempotency', async () => {
+    const created = await service.create(
+      { ...dto, amount: 100, targetCurrency: 'EUR' },
+      'fx-key',
+      senderUserId,
+    );
+    expect(created).toMatchObject({
+      amount: '100.00',
+      currency: 'USD',
+      destinationAmount: '92.00',
+      destinationCurrency: 'EUR',
+      fxRate: '0.91996320',
+    });
+    const stored = await dataSource.getRepository(Transfer).findOneByOrFail({ id: created.id });
+    expect(stored.fxQuotedAt).toBeInstanceOf(Date);
+    await expect(
+      service.create({ ...dto, amount: 100, targetCurrency: 'UAH' }, 'fx-key', senderUserId),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('returns the same logical transfer for a sequential duplicate', async () => {

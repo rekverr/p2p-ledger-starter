@@ -9,6 +9,7 @@ import { CreateSplitBills1725001003000 } from './migrations/1725001003000-Create
 import { SplitBill } from '../split-bills/entities/split-bill.entity';
 import { SplitBillShare } from '../split-bills/entities/split-bill-share.entity';
 import { SplitBillReminder } from '../split-bills/entities/split-bill-reminder.entity';
+import { AddTransferFxQuote1725001004000 } from './migrations/1725001004000-AddTransferFxQuote';
 
 export const paymentsEntities = [
   PaymentOutboxMessage,
@@ -23,6 +24,7 @@ export const paymentsMigrations = [
   CreateTransfers1725001001000,
   CreateTransferSaga1725001002000,
   CreateSplitBills1725001003000,
+  AddTransferFxQuote1725001004000,
 ];
 
 export function getPaymentsDatabaseOptions(): DataSourceOptions {

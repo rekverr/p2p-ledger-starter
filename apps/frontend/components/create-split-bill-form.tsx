@@ -48,7 +48,7 @@ export function CreateSplitBillForm() {
       router.push(`/split-bills/${bill.id}`);
       router.refresh();
     } catch (current: unknown) {
-      setError(current instanceof Error ? current.message : 'Помилка створення');
+      setError(current instanceof Error ? current.message : 'Split bill creation failed');
     } finally {
       setSubmitting(false);
     }
@@ -56,8 +56,8 @@ export function CreateSplitBillForm() {
 
   return (
     <form className="card" onSubmit={submit}>
-      <h2>Створити split</h2>
-      <label>Тип
+      <h2>Create a split bill</h2>
+      <label>Split type
         <select value={mode} onChange={(event) => setMode(event.target.value as 'equal' | 'custom')}>
           <option value="equal">Equal</option>
           <option value="custom">Custom</option>
@@ -86,7 +86,7 @@ export function CreateSplitBillForm() {
       ))}
       <button type="button" onClick={() => setParticipants((current) => [...current, { userId: '', share: '' }])}>+ Participant</button>
       {error && <p className="error">{error}</p>}
-      <button type="submit" disabled={submitting}>{submitting ? 'Створення…' : 'Створити'}</button>
+      <button type="submit" disabled={submitting}>{submitting ? 'Creating…' : 'Create split bill'}</button>
     </form>
   );
 }

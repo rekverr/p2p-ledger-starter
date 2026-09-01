@@ -2,6 +2,7 @@ import { Transform } from 'class-transformer';
 import {
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsPositive,
   IsUUID,
   Matches,
@@ -34,6 +35,18 @@ export class ValidateInternalTransferDto {
   )
   @Matches(/^[A-Z]{3}$/)
   currency: string;
+
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  @Matches(/^(USD|EUR|UAH)$/)
+  targetCurrency?: string;
+
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 2 })
+  @IsPositive()
+  destinationAmount?: number;
 }
 
 export class HoldInternalTransferDto {
@@ -69,4 +82,16 @@ export class SettleInternalTransferDto extends ReleaseInternalTransferDto {
   )
   @Matches(/^[A-Z]{3}$/)
   currency: string;
+
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  @Matches(/^(USD|EUR|UAH)$/)
+  targetCurrency?: string;
+
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 2 })
+  @IsPositive()
+  destinationAmount?: number;
 }

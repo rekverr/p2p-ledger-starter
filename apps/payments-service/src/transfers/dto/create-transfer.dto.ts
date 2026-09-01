@@ -2,6 +2,7 @@ import { Transform } from 'class-transformer';
 import {
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsPositive,
   IsUUID,
   Matches,
@@ -28,4 +29,11 @@ export class CreateTransferDto {
   )
   @Matches(/^[A-Z]{3}$/)
   currency: string;
+
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  @Matches(/^(USD|EUR|UAH)$/)
+  targetCurrency?: string;
 }

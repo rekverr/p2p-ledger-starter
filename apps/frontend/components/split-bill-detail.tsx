@@ -42,7 +42,7 @@ export function SplitBillDetail({
         body: JSON.stringify({ fromWalletId: walletId }),
       });
       const body = (await response.json()) as { bill?: SplitBill; message?: string };
-      if (!response.ok || !body.bill) throw new Error(body.message ?? 'Share не оплачено');
+      if (!response.ok || !body.bill) throw new Error(body.message ?? 'Share payment failed');
       setBill(body.bill);
     } catch (current: unknown) {
       setError(current instanceof Error ? current.message : 'Payment failed');
@@ -60,7 +60,7 @@ export function SplitBillDetail({
       <LiveRefresh onRefresh={refresh} />
       {error && <p className="error">{error}</p>}
       {wallets.length > 0 && (
-        <label style={{ marginBottom: 18 }}>Гаманець для своєї share
+        <label style={{ marginBottom: 18 }}>Wallet for your share
           <select value={walletId} onChange={(event) => setWalletId(event.target.value)}>
             {wallets.map((wallet) => <option key={wallet.id} value={wallet.id}>{wallet.currency} · {wallet.available}</option>)}
           </select>
@@ -76,7 +76,7 @@ export function SplitBillDetail({
               <p className="status">{share.paymentStatus}</p>
               {own && share.paymentStatus !== 'Paid' && wallets.length > 0 && (
                 <button disabled={paying} onClick={() => void pay(share.id)}>
-                  {error ? 'Повторити той самий payment' : 'Оплатити свою share'}
+                  {error ? 'Retry the same payment' : 'Pay your share'}
                 </button>
               )}
             </article>

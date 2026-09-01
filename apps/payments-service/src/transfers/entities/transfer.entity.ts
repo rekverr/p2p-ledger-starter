@@ -23,6 +23,8 @@ import { SplitBillShare } from '../../split-bills/entities/split-bill-share.enti
   where: `"status" NOT IN ('Completed', 'Failed')`,
 })
 @Check('CHK_transfers_amount_positive', '"amount_minor" > 0')
+@Check('CHK_transfers_destination_amount_positive', '"destination_amount_minor" > 0')
+@Check('CHK_transfers_fx_rate_positive', '"fx_rate_numerator" > 0 AND "fx_rate_denominator" > 0')
 @Check('CHK_transfers_retry_count', '"retry_count" >= 0')
 @Check(
   'CHK_transfers_status',
@@ -62,6 +64,27 @@ export class Transfer {
 
   @Column('varchar', { length: 3 })
   currency: string;
+
+  @Column('varchar', { name: 'destination_currency', length: 3 })
+  destinationCurrency: string;
+
+  @Column('bigint', { name: 'destination_amount_minor' })
+  destinationAmountMinor: string;
+
+  @Column('bigint', { name: 'fx_rate_numerator' })
+  fxRateNumerator: string;
+
+  @Column('bigint', { name: 'fx_rate_denominator' })
+  fxRateDenominator: string;
+
+  @Column('varchar', { name: 'fx_display_rate', length: 40 })
+  fxDisplayRate: string;
+
+  @Column('timestamptz', { name: 'fx_quoted_at' })
+  fxQuotedAt: Date;
+
+  @Column('timestamptz', { name: 'fx_expires_at' })
+  fxExpiresAt: Date;
 
   @Column('varchar', { length: 30, default: TransferStatus.Pending })
   status: TransferStatus;

@@ -28,6 +28,9 @@ export interface Transfer {
   receiverReference: string;
   amount: string;
   currency: string;
+  destinationAmount: string;
+  destinationCurrency: string;
+  fxRate: string;
   status: TransferStatus;
   failureCode: string | null;
   failureMessage: string | null;

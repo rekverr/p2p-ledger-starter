@@ -15,6 +15,7 @@ import {
 } from '../src/transfers/ledger.gateway';
 import { TransferSagaService } from '../src/transfers/transfer-saga.service';
 import { TransfersService } from '../src/transfers/transfers.service';
+import { TransferPolicyService } from '../src/transfers/transfer-policy.service';
 
 jest.setTimeout(30_000);
 
@@ -332,6 +333,31 @@ describe('persisted transfer saga', () => {
 
     await expect(statusOf(transfer.id)).resolves.toBe(TransferStatus.Completed);
     expect(ledger.monetaryEffects).toBe(1);
+  });
+
+  it('fails a blocked receiver before placing any hold', async () => {
+    process.env.BLOCKED_RECEIVER_REFERENCES = 'receiver@example.com';
+    const transfer = await create();
+    const enforcingSaga = new TransferSagaService(
+      dataSource.getRepository(Transfer),
+      dataSource,
+      ledger,
+      outbox,
+      undefined,
+      new TransferPolicyService(),
+    );
+
+    await enforcingSaga.run(transfer.id);
+
+    await expect(statusOf(transfer.id)).resolves.toBe(TransferStatus.Failed);
+    await expect(
+      dataSource.getRepository(Transfer).findOneByOrFail({ id: transfer.id }),
+    ).resolves.toMatchObject({
+      failureCode: 'RECEIVER_BLOCKED',
+      holdMayExist: false,
+    });
+    expect(ledger.heldMinor(transfer.id)).toBe(0n);
+    expect(ledger.monetaryEffects).toBe(0);
   });
 
   async function statusOf(id: string): Promise<TransferStatus> {

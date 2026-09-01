@@ -162,7 +162,7 @@ jobs:
       - run: >-
           docker compose up --build -d
           ledger-service payments-service notifications-service
-          gateway-service rabbitmq jaeger
+          gateway-service frontend rabbitmq jaeger
       - run: node scripts/verify-system-correctness.mjs
       - if: always()
         run: docker compose logs --no-color --tail=200

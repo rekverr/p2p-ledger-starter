@@ -145,6 +145,10 @@ export class WalletsService {
     command: ValidateInternalTransferDto,
   ): Promise<{ receiverWalletId: string }> {
     this.toPositiveMinorUnits(command.amount);
+    if (command.destinationAmount !== undefined) {
+      this.toPositiveMinorUnits(command.destinationAmount);
+    }
+    const targetCurrency = command.targetCurrency ?? command.currency;
     const sender = await this.wallets.findOne({
       where: {
         id: command.senderWalletId,
@@ -156,7 +160,7 @@ export class WalletsService {
 
     let receiver = this.isUuid(command.receiverReference)
       ? await this.wallets.findOne({
-          where: { id: command.receiverReference, currency: command.currency },
+          where: { id: command.receiverReference, currency: targetCurrency },
         })
       : null;
     if (!receiver) {
@@ -165,12 +169,12 @@ export class WalletsService {
       });
       if (!receiverUser) throw new NotFoundException('Receiver not found');
       receiver = await this.wallets.findOne({
-        where: { ownerId: receiverUser.id, currency: command.currency },
+        where: { ownerId: receiverUser.id, currency: targetCurrency },
       });
       if (!receiver) {
         const created = await this.getOrCreateForUser(
           receiverUser.id,
-          command.currency,
+          targetCurrency,
         );
         receiver = await this.wallets.findOneByOrFail({ id: created.id });
       }
@@ -223,10 +227,20 @@ export class WalletsService {
     command: SettleInternalTransferDto,
   ): Promise<{ sender: WalletView; receiver: WalletView }> {
     const amountMinor = this.toPositiveMinorUnits(command.amount);
+    const destinationAmountMinor = this.toPositiveMinorUnits(
+      command.destinationAmount ?? command.amount,
+    );
+    const destinationCurrency = command.targetCurrency ?? command.currency;
     for (let attempt = 1; attempt <= MAX_CONCURRENCY_RETRIES; attempt += 1) {
       const completed = await this.transferSettlements.findOneBy({ transferId });
       if (completed) {
-        this.assertSettlementMatches(completed, command, amountMinor);
+        this.assertSettlementMatches(
+          completed,
+          command,
+          amountMinor,
+          destinationAmountMinor,
+          destinationCurrency,
+        );
         return this.readSettlementWallets(completed);
       }
       try {
@@ -234,7 +248,13 @@ export class WalletsService {
           const receipts = manager.getRepository(LedgerTransferSettlement);
           const raced = await receipts.findOneBy({ transferId });
           if (raced) {
-            this.assertSettlementMatches(raced, command, amountMinor);
+            this.assertSettlementMatches(
+              raced,
+              command,
+              amountMinor,
+              destinationAmountMinor,
+              destinationCurrency,
+            );
             return this.readSettlementWallets(raced, manager);
           }
 
@@ -247,7 +267,7 @@ export class WalletsService {
             },
           });
           const receiver = await wallets.findOne({
-            where: { id: command.receiverWalletId, currency: command.currency },
+            where: { id: command.receiverWalletId, currency: destinationCurrency },
           });
           if (!sender || !receiver) {
             throw new NotFoundException('Transfer wallet not found');
@@ -287,7 +307,7 @@ export class WalletsService {
             throw new ConflictException('Transfer was consumed without a receipt');
           }
           const creditEvent = receiverAggregate.deposit(
-            amountMinor,
+            destinationAmountMinor,
             randomUUID(),
             transactionId,
           );
@@ -325,6 +345,8 @@ export class WalletsService {
             receiverWalletId: receiver.id,
             amountMinor: amountMinor.toString(),
             currency: command.currency,
+            destinationAmountMinor: destinationAmountMinor.toString(),
+            destinationCurrency,
           });
           return {
             sender: this.toView(sender, senderProjection),
@@ -586,12 +608,16 @@ export class WalletsService {
     settlement: LedgerTransferSettlement,
     command: SettleInternalTransferDto,
     amountMinor: bigint,
+    destinationAmountMinor: bigint,
+    destinationCurrency: string,
   ): void {
     if (
       settlement.senderWalletId !== command.senderWalletId ||
       settlement.receiverWalletId !== command.receiverWalletId ||
       settlement.amountMinor !== amountMinor.toString() ||
-      settlement.currency !== command.currency
+      settlement.currency !== command.currency ||
+      settlement.destinationAmountMinor !== destinationAmountMinor.toString() ||
+      settlement.destinationCurrency !== destinationCurrency
     ) {
       throw new ConflictException(
         'Transfer ID was already settled with different parameters',

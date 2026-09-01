@@ -1,8 +1,13 @@
-# P2P Ledger — стартовий репозиторій
+# P2P Ledger
 
-Це стартовий каркас для тестового завдання (`ТЗ_тестове_завдання_6`). Частина
-сервісів уже працює, частина — лише каркас або TODO. Повний опис завдання —
-у файлі ТЗ, який ви отримали окремо.
+## Project overview
+
+Distributed P2P payments test project built from the supplied starter repository.
+The ledger is event-sourced and double-entry; payments owns durable transfer and
+split-bill workflows; notifications owns an idempotent activity feed and
+user-scoped realtime delivery. A stateless NestJS BFF is the only
+frontend-facing backend. PostgreSQL persistence is owned independently by each
+service and RabbitMQ provides at-least-once integration-event delivery.
 
 ## Що вже працює
 
@@ -20,13 +25,11 @@
 
 ## Що ще НЕ реалізовано
 
-- FX та fraud/limit provider ще не реалізовані;
-  same-currency transfer rules перевіряються ledger-service.
 - Production-grade dashboards/alerting і централізоване log storage ще не
   налаштовані. Локальний Jaeger, OpenTelemetry traces, Prometheus-compatible
   `/metrics`, event log і reconciliation доступні для inspection.
 
-## Multi-service infrastructure
+## Architecture diagram
 
 ```mermaid
 flowchart LR
@@ -66,6 +69,31 @@ connection settings; cross-service state надалі передається л�
 HTTP contracts чи integration events. XA/distributed transactions не
 використовуються.
 
+## Service boundaries
+
+- `ledger-service` owns wallets, immutable event streams, journal postings,
+  holds, balance projections, rebuild and reconciliation. It is the financial
+  source of truth.
+- `payments-service` owns transfers, API idempotency, saga/retry/compensation
+  state and split bills. It calls ledger contracts and never reads ledger DB.
+- `notifications-service` owns its durable inbox and activity feed, consumes
+  versioned events and fans them out to authenticated user rooms. It is not an
+  authoritative balance or transfer store.
+- `gateway-service` is a database-free BFF. It forwards authenticated context,
+  aggregates reads and contains no ledger or payments business decisions.
+
+## Starter code
+
+The existing NestJS services, TypeORM conventions, REST/JWT authentication,
+Next.js App Router pages and npm-per-app layout were preserved. Mutable wallet
+CRUD was incrementally refactored into an append-only event store, double-entry
+journal and rebuildable projections because balance correctness could not be
+made auditable through direct row mutation. Existing service skeletons were
+extended rather than replaced; public wallet/auth routes were retained where
+practical. RabbitMQ, service-owned databases, the BFF and observability wiring
+were added where the assignment requires explicit service boundaries and
+recoverable asynchronous delivery.
+
 ### ADR: NestJS BFF замість GraphQL
 
 У starter repository не було GraphQL schema, resolver layer або GraphQL client.
@@ -96,6 +124,12 @@ Login/register залишились App Router pages. Їх same-origin route han
 та `/api/bff/[...path]` читають cookie на Next.js server і forward-ять
 `Authorization: Bearer ...`; це закриває starter bug, де protected `/wallets`
 ніколи не отримував token.
+
+Короткоживучий access token оновлюється server-side через rotation refresh
+token: middleware refresh-ить navigation до protected page, а BFF proxy один
+раз refresh-ить і повторює API request після `401`. Нові tokens знову пишуться
+тільки у `httpOnly` cookies. Invalid refresh очищає cookies і повертає login;
+logout також видаляє обидва cookies через same-origin endpoint.
 
 - `/wallets`, `/split-bills`, `/split-bills/[id]`, `/activity` та `/admin`
   використовують Server Components для initial authoritative reads;
@@ -151,8 +185,10 @@ crash очікуваний і нейтралізується durable consumer in
 `POST /transfers` вимагає bearer JWT і непорожній `Idempotency-Key` (до 200
 символів). Sender user береться з JWT principal; client передає лише source
 wallet reference. Request нормалізується до canonical форми
-`senderUserId/fromWalletId/receiver/amountMinor/currency`, а її SHA-256
-зберігається у `request_fingerprint`.
+`senderUserId/fromWalletId/receiver/amountMinor/currency/destinationCurrency`,
+а її SHA-256 зберігається у `request_fingerprint`. Тому повторне використання
+ключа з іншою валютою отримувача є payload conflict, а не прихованою зміною
+існуючого transfer.
 
 Unique constraint `(sender_user_id, idempotency_key)` є фінальною concurrency
 гарантією. Перший request вставляє `Pending` transfer. Повтор із тим самим hash
@@ -172,6 +208,25 @@ Pending -> Failed
 
 `Completed` і `Failed` terminal. State update використовує optimistic entity
 version та умову на попередні status/version.
+
+### Multi-currency, FX quote та policy step
+
+Wallet invariant допускає один wallet на `(ownerId, currency)`. Transfer
+зберігає source `amount/currency` і окремі persisted
+`destination_amount_minor/destination_currency`. Для різних валют
+`payments-service` фіксує immutable quote у момент створення: integer rational
+`numerator/denominator`, display rate, `quoted_at` та `expires_at`. Conversion
+виконується `BigInt` half-up arithmetic у minor units; floating point не є
+authoritative representation. Retry/restart використовує той самий quote, а
+ledger settlement receipt зберігає обидві сторони conversion.
+
+Поточний local provider навмисно deterministic і конфігураційний (USD/EUR/UAH),
+щоб tests не залежали від зовнішнього market API. Перед hold saga виконує
+explicit policy decision: allow-list currency, configurable
+`MAX_TRANSFER_AMOUNT`, blocked receiver references і quote expiry. Terminal
+rejection (`LIMIT_EXCEEDED`, `RECEIVER_BLOCKED`, `UNSUPPORTED_CURRENCY`,
+`FX_QUOTE_EXPIRED`) завершує transfer до financial side effect. Це мінімальний
+fraud/limits provider boundary, а не production fraud-scoring engine.
 
 ### Split bills
 
@@ -329,7 +384,29 @@ notifications-service). Тому crash у вузькому проміжку пі
 socket emit може пропустити push, але не activity record і не authoritative
 financial state.
 
-## Observability і security model
+## Consistency model
+
+Strong consistency is deliberately local to one service transaction:
+
+- ledger event append, expected stream version check, postings, balance/hold
+  projection and ledger outbox record commit atomically in ledger PostgreSQL;
+- transfer/saga transition and payments outbox record commit atomically in
+  payments PostgreSQL;
+- notifications inbox dedupe marker and activity item commit atomically in
+  notifications PostgreSQL;
+- wallet stream versions, API idempotency keys and processed event IDs are
+  protected by database unique constraints.
+
+Cross-service state is eventually consistent. A committed outbox row is
+published with confirms and may be delivered more than once; durable consumer
+dedupe makes repeats harmless. Consequently a completed transfer can be visible
+in payments before the corresponding notification/feed entry is visible. BFF
+aggregation may briefly observe independently committed snapshots. Ledger
+balance projections are updated synchronously with their source events, so this
+eventual-consistency window does not exist between a ledger event and its local
+wallet projection.
+
+## Observability and security
 
 Кожен NestJS service стартує OpenTelemetry SDK до завантаження application
 modules. W3C `traceparent`/`tracestate` автоматично поширюються через HTTP;
@@ -349,8 +426,11 @@ Prometheus-compatible metrics доступні на `/metrics` кожного ba
 Вони включають request count/error/latency, transfer outcomes, saga/step
 duration, retries, compensations, outbox backlog, consumer failures і
 reconciliation failures. Локальний Jaeger UI доступний на
-`http://localhost:16686`; admin UI показує зовнішнє посилання на нього, але не
-проксіює tracing backend через public API.
+`http://localhost:16686`. Захищений `GET /bff/admin/traces` читає internal
+Jaeger query API з bounded timeout і повертає лише safe summaries: trace ID,
+operation, start, duration, transfer ID, status і span count. Admin UI показує
+цю таблицю та посилання на повний Jaeger viewer; non-admin відсікається BFF
+role guard-ом до query.
 
 Security boundaries:
 
@@ -376,10 +456,22 @@ Local Compose secrets і спільний RabbitMQ user є лише development 
 process-local; multi-instance deployment потребує shared limiter або enforcement
 на edge. `/metrics` у production також слід обмежити private monitoring network.
 
-## Запуск
+## API documentation
+
+Swagger UI and its machine-readable OpenAPI document are generated from the
+actual NestJS controllers/DTOs:
+
+- ledger: `http://localhost:3001/docs` and `/docs-json`;
+- payments: `http://localhost:3002/docs` and `/docs-json`;
+- notifications: `http://localhost:3003/docs` and `/docs-json`;
+- gateway/BFF: `http://localhost:3004/docs` and `/docs-json`.
+
+## Running locally
+
+From a clean checkout with Docker Desktop/Engine and Compose v2 available:
 
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
 - ledger-service: http://localhost:3001
@@ -407,8 +499,6 @@ cd ../gateway-service && npm test && npm run lint && npm run build
 cd ../frontend && npm test && npm run lint && npm run build
 ```
 
-Не всі тести в репозиторії однаково надійні — це навмисно, дивись ТЗ.
-
 ### Consolidated system-correctness E2E
 
 Після healthy `docker compose up --build -d` виконайте:
@@ -422,6 +512,9 @@ RabbitMQ management publish API та authenticated Socket.IO. Він створ�
 ізольованих users з унікальним run ID і перевіряє не лише HTTP status, а:
 
 - completed transfer, одну payments row і одну ledger settlement receipt;
+- cross-currency `10.00 USD -> 9.20 EUR`, persisted rational FX quote,
+  destination wallet/projection та двовалютний settlement receipt;
+- blocked receiver policy rejection до hold;
 - sender/receiver balances, holds, projections, event types і contiguous stream
   versions;
 - sequential і concurrent reuse одного `Idempotency-Key`;
@@ -519,6 +612,30 @@ Real-DB test виявив, що TypeORM не міг infer PostgreSQL type для
 `User.refreshTokenHash: string | null`. Колонка тепер явно має type `varchar`,
 тому production entities проходять DataSource initialization, а concurrency
 integration test перевіряє саме production `User` і `Wallet` metadata.
+
+### Frontend auth forwarding
+
+- **Проблема:** login/register зберігали token, але protected wallet request не
+  додавав `Authorization`, тому успішний login не давав authenticated dashboard.
+- **Як знайдено:** traced frontend fetch path from auth response to `/wallets`;
+  route used no server-side bearer forwarding.
+- **Regression evidence:** gateway auth forwarding tests and frontend BFF route
+  tests assert that the JWT comes from an `httpOnly` cookie and is forwarded as
+  a bearer header; browser JavaScript cannot read the token.
+- **Виправлення:** Next.js same-origin route handlers own cookies and forward
+  auth context to the stateless NestJS BFF, which forwards it to service APIs.
+
+### Dependency and CI baseline
+
+- **Проблема:** package lockfiles were missing while CI referred to
+  `package-lock.json`; not every app had a real build/typecheck in CI.
+- **Як знайдено:** clean-install and workflow audit from a checkout without
+  pre-existing `node_modules`.
+- **Regression evidence:** every app now has a generated lockfile, Dockerfiles
+  and CI use `npm ci`, and CI runs lint/build/tests plus PostgreSQL integration
+  jobs and the Compose system-correctness harness.
+- **Виправлення:** lockfiles were generated through npm install workflow and CI
+  was aligned with actual app scripts instead of removing failing checks.
 
 ### Docker production entrypoint
 
@@ -649,7 +766,7 @@ constraints до існуючих projections.
 
 ## Відтворювана перевірка
 
-CI використовує Node.js 20 та виконує `npm ci`, lint і build для всіх чотирьох
+CI використовує Node.js 20 та виконує `npm ci`, lint і build для всіх п'яти
 apps. Ledger job додатково запускає unit tests та PostgreSQL concurrency
 integration tests. Payments job запускає unit, persistence, transfer
 idempotency/concurrency, saga і split-bill integration tests; notifications job
@@ -703,3 +820,97 @@ management, а не використовувати example values.
 Остання команда очікує dedicated PostgreSQL database
 `ledger_concurrency_test` на `127.0.0.1:55432`; налаштування можна змінити через
 `TEST_DATABASE_*` environment variables.
+
+## Architecture decisions index
+
+- **Event sourcing:** `ledger_events` is append-only application state with a
+  unique event ID and `(stream_id, stream_version)` optimistic concurrency.
+  `event_type` plus `schema_version` supports version-specific replay.
+- **Double-entry:** every journal transaction is validated so signed postings
+  sum to zero; partial journal writes share the event append transaction.
+- **CQRS:** commands authorize, replay and append; queries read rebuildable
+  wallet projections. Mutable balance is not an independent source of truth.
+- **Holds:** `available = total - held`; place/release/settle commands use stable
+  business IDs, expected versions and idempotent terminal behavior.
+- **Reconciliation:** wallet reconciliation compares replay with projection;
+  global reconciliation compares all debit and credit postings for a period.
+- **Saga:** payments orchestrates persisted states, bounded retries/timeouts,
+  backoff, circuit isolation and compensation. A recovery worker claims due
+  work so multiple instances can safely continue stuck workflows.
+- **Idempotency:** API keys are durable and fingerprinted; integration consumers
+  deduplicate durable event IDs. Neither guarantee is held only in memory.
+- **Event broker:** RabbitMQ was selected over Kafka/Redis Streams for the
+  smallest operational footprint that still provides durable queues, manual
+  acknowledgements, publisher confirms and practical at-least-once delivery.
+- **Outbox:** services that commit state and publish an event persist the event
+  in the same local transaction; a retrying relay publishes it afterwards.
+- **Resilience:** ledger calls are bounded, retry only idempotent commands,
+  back off and open a circuit after repeated transient failures.
+- **Frontend architecture:** Server Components load authoritative initial data;
+  Client Components own mutations and realtime/reconnect state. Server Actions
+  are used for appropriate non-live mutations. Push triggers a fresh query.
+
+Detailed schemas, endpoints, state transitions and compensation matrix appear
+in the capability sections above.
+
+## Race/load test result
+
+Final PostgreSQL/HTTP concurrency run used starting balance `1000.00`,
+concurrency `100`, 100 attempts of `100.00`, expected at most `10` successes,
+actual `10`, final total/held/available `0.00/0.00/0.00`, reconciliation `true`
+and duration `564 ms`. The direct ledger integration variant repeated the same
+scenario in `174 ms`. Both asserted contiguous unique stream versions and no
+duplicate ledger effect; timing is local-machine evidence, not a benchmark.
+
+## Known limitations / what I would improve
+
+- The bundled FX table is deterministic test-project configuration, not a live
+  market-rate source. The policy provider implements limits/blocklists and a
+  stable extension boundary, not a production fraud-scoring/risk system.
+- Admin embeds recent trace summaries and links to Jaeger, but production
+  dashboards, alert rules and centralized log storage are not provisioned.
+- Rate-limit and circuit-breaker state is process-local. A horizontally scaled
+  production deployment should enforce shared limits/isolation at the edge.
+- Local Compose credentials are non-secret development defaults. Production
+  requires secret management, TLS/mTLS or workload identity, broker ACLs and
+  private metrics access.
+- npm reports dependency audit advisories; they are not hidden or auto-fixed
+  because major framework upgrades require a separate compatibility review.
+- The clean `docker compose up -d --build` rerun is environment-blocked because
+  this Docker Desktop daemon hangs while resolving/pulling the missing
+  `node:20-alpine` manifest (direct Docker Hub and its configured Hub proxy).
+  Host HTTPS to the registry works. Runtime E2E was still executed against
+  healthy Compose infrastructure using locally built artifacts, but that does
+  not turn the canonical clean-image build into PASS.
+
+## Requirements scorecard
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| Three NestJS services, BFF and Next.js App Router frontend | DONE | `apps/*`; `docker-compose.yml`; per-app build commands |
+| Database ownership per service; no foreign SQL access | DONE | three TypeORM data sources/DB networks; boundary tests and Compose env |
+| JWT auth, refresh and server-side ownership/IDOR protection | DONE | ledger auth/wallet guards; wallet owner regression tests |
+| Wallet creation and one-wallet-per-user/currency invariant | DONE | wallet migration unique index; lifecycle/concurrency tests |
+| Multi-currency/FX transfer conversion | DONE | persisted rational quote/destination fields; cross-currency ledger and system tests |
+| Append-only event store, schema versions and optimistic concurrency | DONE | ledger event-store entities/migrations; event-store integration suite |
+| Double-entry journal and rebuildable CQRS projections | DONE | ledger domain/projector/reconciliation tests and admin endpoints |
+| Idempotent holds with concurrent available-balance protection | DONE | hold commands/replay and concurrency integration tests |
+| Durable transfer creation and sequential/concurrent Idempotency-Key | DONE | payments unique constraints and transfer integration suite |
+| Orchestrated saga, compensation, retries/timeouts and recovery | DONE | persisted saga state, ledger client/circuit and saga integration suite |
+| Fraud/limits decision step/provider | DONE | pre-hold policy service, configurable limit/blocklist and terminal-rejection tests |
+| Split bills, exact shares, normal transfer path and reminders | DONE | split entities/service/worker; split-bill integration suite |
+| Reliable outbox and durable consumer dedupe | DONE | ledger/payments outboxes; notifications inbox; persistence tests |
+| Activity feed and authenticated user-scoped WebSocket | DONE | notifications API/gateway; socket and reconnect tests |
+| Admin event log, rebuild and reconciliation | DONE | `/admin/ledger/*`; admin guard tests |
+| Embedded admin recent traces/saga timings | DONE | guarded `/bff/admin/traces`, summarized timings table and Jaeger link |
+| OpenTelemetry HTTP/broker context, JSON logs and `/metrics` | DONE | observability modules in four Nest apps; Jaeger/OTLP Compose wiring |
+| Login and transfer rate limits | DONE | ledger/BFF login limiter and payments principal limiter tests |
+| Swagger/OpenAPI for REST APIs | DONE | `/docs` and `/docs-json` setup in four Nest apps; builds pass |
+| CI install, lint, build, unit, integration and system E2E | DONE | `.github/workflows/ci.yml`; lockfiles and real scripts |
+| Clean `docker compose up --build` final local verification | PARTIAL | Compose config valid; daemon hangs pulling missing `node:20-alpine`; canonical command not passed |
+| Full successful/failure/idempotency/outage/reconnect system harness | DONE | `scripts/verify-system-correctness.mjs` passed against healthy local Compose runtime artifacts |
+
+`DONE` means implementation plus repository evidence exists; it does not
+override an explicitly reported command failure. The clean-image startup row
+remains `PARTIAL` until the Dockerfiles can be rebuilt on an engine whose
+registry pull works.

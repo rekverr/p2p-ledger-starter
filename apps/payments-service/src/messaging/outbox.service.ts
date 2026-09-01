@@ -69,6 +69,9 @@ export class PaymentsOutboxService
         receiverWalletId: transfer.receiverWalletId,
         amountMinor: transfer.amountMinor,
         currency: transfer.currency,
+        destinationAmountMinor: transfer.destinationAmountMinor,
+        destinationCurrency: transfer.destinationCurrency,
+        fxRate: transfer.fxDisplayRate,
         status: 'Completed',
       },
     };

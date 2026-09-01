@@ -55,4 +55,25 @@ describe('frontend BFF proxy', () => {
     expect(response.status).toBe(403);
     expect(upstreamFetch).not.toHaveBeenCalled();
   });
+
+  it('rotates httpOnly tokens and retries once after an expired access token', async () => {
+    const upstreamFetch = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        accessToken: 'fresh.access.token', refreshToken: 'fresh.refresh.token',
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response('[]', { status: 200 }));
+    const request = new NextRequest('http://frontend/api/bff/wallets', {
+      headers: { cookie: 'accessToken=expired.jwt.value; refreshToken=refresh.jwt.value' },
+    });
+
+    const response = await proxyBffRequest(request, ['wallets']);
+
+    expect(response.status).toBe(200);
+    expect(upstreamFetch).toHaveBeenLastCalledWith(
+      'http://localhost:3004/bff/wallets',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer fresh.access.token' }) }),
+    );
+    expect(response.headers.get('set-cookie')).toContain('HttpOnly');
+  });
 });

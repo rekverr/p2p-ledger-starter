@@ -53,6 +53,24 @@ describe('Wallet aggregate and double-entry journal', () => {
     });
   });
 
+  it('replays persisted WalletCreated v1 and emits the current v2 schema', () => {
+    const legacy: StoredEvent = {
+      ...stored(WalletAggregate.createdEvent(ownerId, 'USD'), 1),
+      schemaVersion: 1,
+      payload: { ownerId, currency: 'USD' },
+    };
+
+    expect(WalletAggregate.rehydrate(walletId, [legacy])).toMatchObject({
+      ownerId,
+      currency: 'USD',
+      version: 1,
+    });
+    expect(WalletAggregate.createdEvent(ownerId, 'EUR')).toMatchObject({
+      schemaVersion: 2,
+      payload: { ownerId, currencyCode: 'EUR' },
+    });
+  });
+
   it('creates balanced postings for deposit and withdrawal', () => {
     const aggregate = opened();
     const deposit = aggregate.deposit(5000n, randomUUID(), randomUUID());

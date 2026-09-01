@@ -72,7 +72,7 @@ describe('WalletsService PostgreSQL concurrency', () => {
     );
   });
 
-  async function createWallet(balance = 100): Promise<{ owner: User; wallet: WalletView }> {
+  async function createWallet(balance = 100, currency = 'USD'): Promise<{ owner: User; wallet: WalletView }> {
     const owner = await users.save(
       users.create({
         email: `owner-${++userSequence}@example.com`,
@@ -81,7 +81,7 @@ describe('WalletsService PostgreSQL concurrency', () => {
         role: 'user',
       }),
     );
-    let wallet = await service.getOrCreateForUser(owner.id);
+    let wallet = await service.getOrCreateForUser(owner.id, currency);
     if (balance > 0) wallet = await service.deposit(wallet.id, owner.id, balance);
     return { owner, wallet };
   }
@@ -355,6 +355,41 @@ describe('WalletsService PostgreSQL concurrency', () => {
     await expect(maintenance.reconcileGlobal()).resolves.toMatchObject({
       balanced: true,
     });
+  });
+
+  it('settles persisted source and destination amounts across currencies', async () => {
+    const sender = await createWallet(100, 'USD');
+    const receiver = await createWallet(0, 'EUR');
+    const transferId = randomUUID();
+    await service.placeTransferHold(transferId, {
+      senderUserId: sender.owner.id,
+      senderWalletId: sender.wallet.id,
+      amount: 10,
+    });
+
+    const command = {
+      senderUserId: sender.owner.id,
+      senderWalletId: sender.wallet.id,
+      receiverWalletId: receiver.wallet.id,
+      amount: 10,
+      currency: 'USD',
+      destinationAmount: 9.2,
+      targetCurrency: 'EUR',
+    };
+    await service.settleTransfer(transferId, command);
+    await service.settleTransfer(transferId, command);
+
+    await expect(service.getById(sender.wallet.id, sender.owner.id)).resolves.toMatchObject({ balance: '90.00' });
+    await expect(service.getById(receiver.wallet.id, receiver.owner.id)).resolves.toMatchObject({ balance: '9.20' });
+    await expect(
+      dataSource.getRepository(LedgerTransferSettlement).findOneByOrFail({ transferId }),
+    ).resolves.toMatchObject({
+      amountMinor: '1000',
+      currency: 'USD',
+      destinationAmountMinor: '920',
+      destinationCurrency: 'EUR',
+    });
+    await expect(maintenance.reconcileGlobal()).resolves.toMatchObject({ balanced: true });
   });
 
   it('releases a transfer hold repeatedly without losing money', async () => {

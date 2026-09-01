@@ -41,6 +41,8 @@ export class LedgerHttpClient implements LedgerGateway {
       receiverReference: transfer.receiverReference,
       amount: this.amount(transfer.amountMinor),
       currency: transfer.currency,
+      destinationAmount: this.amount(transfer.destinationAmountMinor),
+      targetCurrency: transfer.destinationCurrency,
     });
   }
 
@@ -67,6 +69,8 @@ export class LedgerHttpClient implements LedgerGateway {
       receiverWalletId: transfer.receiverWalletId,
       amount: this.amount(transfer.amountMinor),
       currency: transfer.currency,
+      destinationAmount: this.amount(transfer.destinationAmountMinor),
+      targetCurrency: transfer.destinationCurrency,
     });
   }
 

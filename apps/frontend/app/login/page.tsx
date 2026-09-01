@@ -20,7 +20,7 @@ export default function LoginPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-      if (!res.ok) throw new Error('Невірний email або пароль');
+      if (!res.ok) throw new Error('Invalid email or password');
       router.push('/wallets');
       router.refresh();
     } catch (err) {
@@ -31,31 +31,31 @@ export default function LoginPage() {
   }
 
   return (
-    <main style={{ maxWidth: 360, margin: '80px auto' }}>
-      <h1>Вхід</h1>
+    <main className="page narrow-page">
+      <section className="card form-card">
+      <p className="eyebrow">Welcome back</p><h1>Sign in</h1>
       <form onSubmit={onSubmit}>
-        <input
+        <label>Email<input
           type="email"
-          placeholder="Email"
+          autoComplete="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
-        />
-        <br />
-        <input
+        /></label>
+        <label>Password<input
           type="password"
-          placeholder="Пароль"
+          autoComplete="current-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
-        />
-        <br />
-        {error && <p style={{ color: 'crimson' }}>{error}</p>}
-        <button type="submit" disabled={loading}>{loading ? 'Вхід…' : 'Увійти'}</button>
+        /></label>
+        {error && <p className="error" role="alert">{error}</p>}
+        <button type="submit" disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</button>
       </form>
       <p>
-        Немає акаунта? <a href="/register">Зареєструватись</a>
+        Don&apos;t have an account? <a href="/register">Create one</a>
       </p>
+      </section>
     </main>
   );
 }

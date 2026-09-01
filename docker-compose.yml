@@ -91,6 +91,12 @@ services:
         condition: service_healthy
     ports:
       - '3001:3001'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3001/metrics >/dev/null']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     networks:
       - default
       - ledger-data
@@ -108,6 +114,12 @@ services:
         condition: service_healthy
     ports:
       - '3002:3002'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3002/metrics >/dev/null']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     networks:
       - default
       - payments-data
@@ -125,6 +137,12 @@ services:
         condition: service_healthy
     ports:
       - '3003:3003'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3003/metrics >/dev/null']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     networks:
       - default
       - notifications-data
@@ -133,14 +151,24 @@ services:
     build: ./apps/gateway-service
     env_file: ./apps/gateway-service/.env.example
     environment:
+      JAEGER_QUERY_URL: http://jaeger:16686
       OTEL_SERVICE_NAME: gateway-service
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
     depends_on:
-      - ledger-service
-      - payments-service
-      - notifications-service
+      ledger-service:
+        condition: service_healthy
+      payments-service:
+        condition: service_healthy
+      notifications-service:
+        condition: service_healthy
     ports:
       - '3004:3004'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3004/metrics >/dev/null']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
 
   frontend:
     build: ./apps/frontend
@@ -151,9 +179,16 @@ services:
       NEXT_PUBLIC_JAEGER_URL: http://localhost:16686
       FRONTEND_ORIGIN: http://localhost:3000
     depends_on:
-      - gateway-service
+      gateway-service:
+        condition: service_healthy
     ports:
       - '3000:3000'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/ >/dev/null']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
 
 volumes:
   ledger-db-data:
@@ -163,8 +198,5 @@ volumes:
 
 networks:
   ledger-data:
-    internal: true
   payments-data:
-    internal: true
   notifications-data:
-    internal: true

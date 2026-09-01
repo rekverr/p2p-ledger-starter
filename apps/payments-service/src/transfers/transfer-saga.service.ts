@@ -22,6 +22,7 @@ import {
   LedgerGateway,
 } from './ledger.gateway';
 import { MetricsService } from '../observability/metrics.service';
+import { TransferPolicyService } from './transfer-policy.service';
 
 const TERMINAL_STATUSES = [TransferStatus.Completed, TransferStatus.Failed];
 
@@ -42,6 +43,7 @@ export class TransferSagaService
     @Inject(LEDGER_GATEWAY) private readonly ledger: LedgerGateway,
     private readonly outbox: PaymentsOutboxService,
     @Optional() private readonly metrics?: MetricsService,
+    @Optional() private readonly policy?: TransferPolicyService,
   ) {}
 
   async run(transferId: string, now = new Date()): Promise<void> {
@@ -64,6 +66,7 @@ export class TransferSagaService
 
         if (transfer.status === TransferStatus.Validating) {
           const current = transfer;
+          this.policy?.validate(current, now);
           if (!transfer.receiverWalletId) {
             const validation = await this.measureStep(
               'validate',

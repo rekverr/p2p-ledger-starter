@@ -1,3 +1,3 @@
 export default function LoadingSplitBills() {
-  return <main className="page"><p>Завантаження split bills…</p></main>;
+  return <main className="page"><p>Loading split bills…</p></main>;
 }

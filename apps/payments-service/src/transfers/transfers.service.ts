@@ -14,6 +14,7 @@ import {
   TransferStatus,
 } from './domain/transfer-status';
 import { Transfer } from './entities/transfer.entity';
+import { quoteTransfer } from './domain/fx-quote';
 
 const IDEMPOTENCY_CONSTRAINT = 'UQ_transfers_sender_idempotency';
 const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
@@ -27,6 +28,11 @@ export interface TransferView {
   splitBillShareId: string | null;
   amount: string;
   currency: string;
+  destinationAmount: string;
+  destinationCurrency: string;
+  fxRate: string;
+  fxQuotedAt: Date;
+  fxExpiresAt: Date;
   status: TransferStatus;
   idempotencyKey: string;
   failureCode: string | null;
@@ -43,6 +49,7 @@ interface CanonicalTransferRequest {
   receiverReference: string;
   amountMinor: string;
   currency: string;
+  destinationCurrency: string;
   splitBillShareId: string | null;
 }
 
@@ -82,6 +89,7 @@ export class TransfersService {
       receiverReference: input.receiverReference.trim().toLowerCase(),
       amountMinor: input.amountMinor,
       currency: input.currency,
+      destinationCurrency: input.currency,
       splitBillShareId: input.shareId,
     };
     return this.createCanonical(canonical, idempotencyKey);
@@ -107,6 +115,7 @@ export class TransfersService {
     const transfer = this.transfers.create({
       id: randomUUID(),
       ...canonical,
+      ...this.quote(canonical),
       status: TransferStatus.Pending,
       idempotencyKey,
       requestFingerprint: fingerprint,
@@ -208,6 +217,7 @@ export class TransfersService {
       receiverReference: dto.toWalletIdentifier.trim(),
       amountMinor: this.amountToMinorUnits(dto.amount),
       currency: dto.currency.trim().toUpperCase(),
+      destinationCurrency: (dto.targetCurrency ?? dto.currency).trim().toUpperCase(),
       splitBillShareId,
     };
   }
@@ -240,6 +250,13 @@ export class TransfersService {
       splitBillShareId: transfer.splitBillShareId ?? null,
       amount: this.formatMinorUnits(BigInt(transfer.amountMinor)),
       currency: transfer.currency,
+      destinationAmount: this.formatMinorUnits(
+        BigInt(transfer.destinationAmountMinor),
+      ),
+      destinationCurrency: transfer.destinationCurrency,
+      fxRate: transfer.fxDisplayRate,
+      fxQuotedAt: transfer.fxQuotedAt,
+      fxExpiresAt: transfer.fxExpiresAt,
       status: transfer.status,
       idempotencyKey: transfer.idempotencyKey,
       failureCode: transfer.failureCode,
@@ -248,6 +265,30 @@ export class TransfersService {
       nextRetryAt: transfer.nextRetryAt,
       createdAt: transfer.createdAt,
       updatedAt: transfer.updatedAt,
+    };
+  }
+
+  private quote(request: CanonicalTransferRequest): Pick<
+    Transfer,
+    | 'destinationAmountMinor'
+    | 'fxRateNumerator'
+    | 'fxRateDenominator'
+    | 'fxDisplayRate'
+    | 'fxQuotedAt'
+    | 'fxExpiresAt'
+  > {
+    const quote = quoteTransfer(
+      request.amountMinor,
+      request.currency,
+      request.destinationCurrency,
+    );
+    return {
+      destinationAmountMinor: quote.destinationAmountMinor,
+      fxRateNumerator: quote.rateNumerator,
+      fxRateDenominator: quote.rateDenominator,
+      fxDisplayRate: quote.displayRate,
+      fxQuotedAt: quote.quotedAt,
+      fxExpiresAt: quote.expiresAt,
     };
   }
 

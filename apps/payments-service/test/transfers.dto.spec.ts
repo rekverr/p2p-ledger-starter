@@ -8,6 +8,7 @@ describe('CreateTransferDto', () => {
     toWalletIdentifier: 'receiver@example.com',
     amount: 10.25,
     currency: 'usd',
+    targetCurrency: 'eur',
   };
 
   it('normalizes receiver/currency and accepts a valid amount', async () => {
@@ -18,6 +19,7 @@ describe('CreateTransferDto', () => {
     await expect(validate(dto)).resolves.toHaveLength(0);
     expect(dto.currency).toBe('USD');
     expect(dto.toWalletIdentifier).toBe('receiver@example.com');
+    expect(dto.targetCurrency).toBe('EUR');
   });
 
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, '10', 10.001])(
@@ -28,4 +30,10 @@ describe('CreateTransferDto', () => {
       ).resolves.not.toHaveLength(0);
     },
   );
+
+  it('rejects unsupported target currencies', async () => {
+    await expect(
+      validate(plainToInstance(CreateTransferDto, { ...valid, targetCurrency: 'GBP' })),
+    ).resolves.not.toHaveLength(0);
+  });
 });

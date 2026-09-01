@@ -22,4 +22,12 @@ export class AuthController {
       body,
     });
   }
+
+  @Post('refresh')
+  refresh(@Body() body: unknown) {
+    return this.upstream.request('ledger', '/auth/refresh', {
+      method: 'POST',
+      body,
+    });
+  }
 }

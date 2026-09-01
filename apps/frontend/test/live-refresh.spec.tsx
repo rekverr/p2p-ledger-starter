@@ -26,7 +26,7 @@ describe('LiveRefresh', () => {
     const refresh = vi.fn();
     render(<LiveRefresh onRefresh={refresh} />);
     act(() => handlers.get('connect')?.());
-    expect(screen.getByRole('status')).toHaveTextContent('підключено');
+    expect(screen.getByRole('status')).toHaveTextContent('connected');
     act(() => managerHandlers.get('reconnect_attempt')?.());
     expect(screen.getByRole('status')).toHaveTextContent('reconnecting');
     act(() => handlers.get('connect')?.());

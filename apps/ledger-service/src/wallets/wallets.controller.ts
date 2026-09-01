@@ -29,13 +29,13 @@ export class WalletsController {
   }
 
   @Get(':id')
-  getOne(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+  getOne(@Param('id', new ParseUUIDPipe()) id: string, @Request() req: AuthenticatedRequest) {
     return this.wallets.getById(id, req.user.userId);
   }
 
   @Post(':id/deposit')
   deposit(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: DepositDto,
     @Request() req: AuthenticatedRequest,
   ) {
@@ -44,7 +44,7 @@ export class WalletsController {
 
   @Post(':id/withdraw')
   withdraw(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: WithdrawDto,
     @Request() req: AuthenticatedRequest,
   ) {
@@ -53,7 +53,7 @@ export class WalletsController {
 
   @Post(':id/holds')
   placeHold(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: PlaceHoldDto,
     @Request() req: AuthenticatedRequest,
   ) {
@@ -62,7 +62,7 @@ export class WalletsController {
 
   @Post(':id/holds/:holdId/release')
   releaseHold(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Param('holdId', new ParseUUIDPipe()) holdId: string,
     @Request() req: AuthenticatedRequest,
   ) {
@@ -71,7 +71,7 @@ export class WalletsController {
 
   @Post(':id/holds/:holdId/consume')
   consumeHold(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Param('holdId', new ParseUUIDPipe()) holdId: string,
     @Request() req: AuthenticatedRequest,
   ) {

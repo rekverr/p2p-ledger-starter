@@ -113,7 +113,7 @@ async function walletFor(user) {
   return wallets[0];
 }
 
-async function createTransfer(user, walletId, receiver, amount, key) {
+async function createTransfer(user, walletId, receiver, amount, key, targetCurrency = 'USD') {
   return request(gateway, '/bff/transfers', {
     method: 'POST',
     headers: { ...authorization(user.token), 'idempotency-key': key },
@@ -122,6 +122,7 @@ async function createTransfer(user, walletId, receiver, amount, key) {
       toWalletIdentifier: receiver.email,
       amount,
       currency: 'USD',
+      targetCurrency,
     },
   });
 }
@@ -314,6 +315,62 @@ async function main() {
       .length,
     1,
   );
+
+  const crossCurrency = await createTransfer(
+    sender,
+    senderWallet.id,
+    receiver,
+    10,
+    `fx-${runId}`,
+    'EUR',
+  );
+  assert.equal(crossCurrency.status, 'Completed');
+  assert.deepEqual(
+    {
+      source: `${crossCurrency.amount} ${crossCurrency.currency}`,
+      destination: `${crossCurrency.destinationAmount} ${crossCurrency.destinationCurrency}`,
+      rate: crossCurrency.fxRate,
+    },
+    { source: '10.00 USD', destination: '9.20 EUR', rate: '0.91996320' },
+  );
+  const receiverWalletsAfterFx = await request(ledger, '/wallets', {
+    headers: authorization(receiver.token),
+  });
+  const receiverEur = receiverWalletsAfterFx.find(({ currency }) => currency === 'EUR');
+  assert.ok(receiverEur, 'cross-currency transfer must create the receiver EUR wallet');
+  assert.equal(receiverEur.balance, '9.20');
+  assert.equal(
+    composePsql(
+      'payments-db',
+      'payments',
+      'payments',
+      `SELECT count(*) FROM transfers WHERE id = '${crossCurrency.id}' AND destination_amount_minor = 920 AND destination_currency = 'EUR' AND fx_rate_numerator = 1000000 AND fx_rate_denominator = 1087000`,
+    ),
+    '1',
+  );
+  assert.equal(
+    composePsql(
+      'ledger-db',
+      'ledger',
+      'ledger',
+      `SELECT count(*) FROM ledger_transfer_settlements WHERE transfer_id = '${crossCurrency.id}' AND amount_minor = 1000 AND currency = 'USD' AND destination_amount_minor = 920 AND destination_currency = 'EUR'`,
+    ),
+    '1',
+  );
+
+  const blockedTransfer = await request(gateway, '/bff/transfers', {
+    method: 'POST',
+    headers: { ...authorization(sender.token), 'idempotency-key': `blocked-${runId}` },
+    body: {
+      fromWalletId: senderWallet.id,
+      toWalletIdentifier: 'blocked@example.com',
+      amount: 1,
+      currency: 'USD',
+      targetCurrency: 'USD',
+    },
+  });
+  assert.equal(blockedTransfer.status, 'Failed');
+  assert.equal(blockedTransfer.failureCode, 'RECEIVER_BLOCKED');
 
   const sequentialKey = `sequential-${runId}`;
   const sequentialFirst = await createTransfer(
@@ -568,6 +625,19 @@ async function main() {
       concurrentTransferId: concurrent[0].id,
       logicalTransfers: 2,
       ledgerSettlements: 2,
+    },
+    crossCurrency: {
+      transferId: crossCurrency.id,
+      source: `${crossCurrency.amount} ${crossCurrency.currency}`,
+      destination: `${crossCurrency.destinationAmount} ${crossCurrency.destinationCurrency}`,
+      fxRate: crossCurrency.fxRate,
+      receiverProjectionBalance: receiverEur.balance,
+    },
+    policyRejection: {
+      transferId: blockedTransfer.id,
+      finalStatus: blockedTransfer.status,
+      failureCode: blockedTransfer.failureCode,
+      holdPlaced: false,
     },
     ledgerOutage: {
       transferId: outageTransfer.id,

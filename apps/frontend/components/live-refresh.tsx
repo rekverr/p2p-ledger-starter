@@ -40,7 +40,7 @@ export function LiveRefresh({ onRefresh }: { onRefresh: () => void | Promise<voi
 
   return (
     <p className={state === 'connected' ? 'muted' : 'offline'} role="status">
-      Live: {state === 'connected' ? 'підключено' : state}
+      Live: {state === 'connected' ? 'connected' : state}
     </p>
   );
 }

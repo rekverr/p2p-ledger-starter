@@ -16,6 +16,7 @@ import { Wallet } from './wallet.entity';
   'receiverWalletId',
 ])
 @Check('CHK_ledger_transfer_settlements_amount', '"amount_minor" > 0')
+@Check('CHK_ledger_transfer_destination_amount', '"destination_amount_minor" > 0')
 @Check(
   'CHK_ledger_transfer_settlements_distinct_wallets',
   '"sender_wallet_id" <> "receiver_wallet_id"',
@@ -49,6 +50,12 @@ export class LedgerTransferSettlement {
 
   @Column('varchar', { length: 3 })
   currency: string;
+
+  @Column('bigint', { name: 'destination_amount_minor' })
+  destinationAmountMinor: string;
+
+  @Column('varchar', { name: 'destination_currency', length: 3 })
+  destinationCurrency: string;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

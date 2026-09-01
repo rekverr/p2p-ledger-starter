@@ -66,8 +66,8 @@ describe('SplitBillDetail', () => {
       />,
     );
 
-    expect(screen.getAllByRole('button', { name: /Оплатити/ })).toHaveLength(1);
-    fireEvent.click(screen.getByRole('button', { name: /Оплатити/ }));
+    expect(screen.getAllByRole('button', { name: /Pay your share/ })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: /Pay your share/ }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/bff/split-bills/11111111-1111-4111-8111-111111111111/shares/33333333-3333-4333-8333-333333333333/pay',

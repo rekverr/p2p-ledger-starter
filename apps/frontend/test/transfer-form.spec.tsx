@@ -35,13 +35,13 @@ describe('TransferForm', () => {
         ]}
       />,
     );
-    fireEvent.change(screen.getByLabelText(/отримувача/i), {
+    fireEvent.change(screen.getByLabelText(/recipient email/i), {
       target: { value: 'receiver@example.com' },
     });
-    fireEvent.change(screen.getByLabelText(/Сума/), { target: { value: '10.00' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Переказати' }));
+    fireEvent.change(screen.getByLabelText(/Amount/), { target: { value: '10.00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send transfer' }));
     await screen.findByText('temporary failure');
-    fireEvent.click(screen.getByRole('button', { name: /Повторити/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
     expect(fetchMock.mock.calls.map((call) => (call[1] as RequestInit).headers)).toEqual([

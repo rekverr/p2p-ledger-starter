@@ -11,6 +11,7 @@ import { WalletBalanceProjection } from '../wallets/entities/wallet-balance-proj
 import { Wallet } from '../wallets/entities/wallet.entity';
 import { LedgerTransferSettlement } from '../wallets/entities/ledger-transfer-settlement.entity';
 import { CreateLedgerTransferSettlements1725000005000 } from './migrations/1725000005000-CreateLedgerTransferSettlements';
+import { AddCrossCurrencySettlements1725000006000 } from './migrations/1725000006000-AddCrossCurrencySettlements';
 
 export const ledgerEntities = [
   User,
@@ -27,6 +28,7 @@ export const ledgerMigrations = [
   AddHeldBalanceProjection1725000003000,
   CreateIntegrationOutbox1725000004000,
   CreateLedgerTransferSettlements1725000005000,
+  AddCrossCurrencySettlements1725000006000,
 ];
 
 export function getLedgerDatabaseOptions(): DataSourceOptions {
