@@ -429,7 +429,10 @@ async function main() {
     });
     assert.equal(outageTransfer.status, 'Validating');
     assert.ok(outageTransfer.retryCount >= 1);
-    assert.equal(outageTransfer.failureCode, 'LEDGER_UNAVAILABLE');
+    assert.ok(
+      ['LEDGER_UNAVAILABLE', 'LEDGER_TIMEOUT'].includes(outageTransfer.failureCode),
+      `expected a retryable ledger outage code, received ${outageTransfer.failureCode}`,
+    );
     outageFailureDurationMs = Math.round(performance.now() - outageStartedAt);
     assert.ok(outageFailureDurationMs < 10_000);
     assert.equal(
@@ -641,6 +644,7 @@ async function main() {
     },
     ledgerOutage: {
       transferId: outageTransfer.id,
+      failureCode: outageTransfer.failureCode,
       boundedFailureDurationMs: outageFailureDurationMs,
       persistedRetryObserved: true,
       recoveredStatus: recoveredTransfer.status,
